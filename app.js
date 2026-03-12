@@ -460,8 +460,11 @@ const ctx = canvas.getContext("2d");
 const LOGICAL_WIDTH = 960;
 const LOGICAL_HEIGHT = 540;
 let currentDpr = 1;
+let enemyUidSeq = 1;
 
 const ui = {
+  board: document.querySelector(".board"),
+  threeLayer: document.getElementById("threeLayer"),
   wave: document.getElementById("waveStat"),
   kills: document.getElementById("killsStat"),
   baseHp: document.getElementById("baseHpStat"),
@@ -480,6 +483,8 @@ const ui = {
   cardsInfoBody: document.getElementById("cardsInfoBody"),
   cardsInfoCloseBtn: document.getElementById("cardsInfoCloseBtn"),
   pauseBtn: document.getElementById("pauseBtn"),
+  threeModeBtn: document.getElementById("threeModeBtn"),
+  cameraOrbitBtn: document.getElementById("cameraOrbitBtn"),
 };
 
 const world = {
@@ -519,6 +524,8 @@ const state = {
   draggingGunIndex: -1,
   pausedByCards: false,
   userPaused: false,
+  threeMode: false,
+  cameraOrbitEnabled: false,
   gameOver: false,
   pendingRegularCardRewards: 0,
   pendingBossLensRewards: 0,
@@ -705,6 +712,35 @@ function gunUpgradesText(gun) {
   return upgrades.length > 0 ? upgrades.join(", ") : "Нет апгрейдов";
 }
 
+function getLensPacketPreview() {
+  const packets = state.lens.distribute(state.engine.produce(), world.guns.length);
+  return packets[0] || {
+    energy: 0,
+    energyMultiplier: 1,
+    burnChance: 0,
+    iceChance: 0,
+    lightningChance: 0,
+    lightningChains: 0,
+    lightningRadius: 0,
+    critChance: 0,
+    critMultiplier: 1.5,
+  };
+}
+
+function composeCombatStats(gun, packet) {
+  const energyScale = gun.energyMultiplier * (packet.energyMultiplier || 1);
+  return {
+    energyScale,
+    magicScale: gun.magicDamageMultiplier * energyScale,
+    burnChance: Math.max(0, Math.min(0.95, gun.burnChance + (packet.burnChance || 0))),
+    iceChance: Math.max(0, Math.min(0.95, gun.iceChance + (packet.iceChance || 0))),
+    oilChance: Math.max(0, Math.min(0.95, gun.oilChance)),
+    lightningChance: Math.max(0, Math.min(0.95, gun.lightningChance + (packet.lightningChance || 0))),
+    lightningChains: Math.max(0, Math.round(gun.lightningChains + (packet.lightningChains || 0))),
+    lightningRadius: Math.max(0, gun.lightningRadius + (packet.lightningRadius || 0)),
+  };
+}
+
 function updateHud() {
   ui.wave.textContent = String(state.wave);
   ui.kills.textContent = String(state.kills);
@@ -712,6 +748,11 @@ function updateHud() {
   ui.nextCard.textContent = state.pendingRegularCardRewards > 0 ? "0" : "1";
   ui.restartBtn.classList.toggle("hidden", !state.gameOver);
   if (ui.pauseBtn) ui.pauseBtn.textContent = state.userPaused ? "Продолжить" : "Пауза";
+  if (ui.threeModeBtn) ui.threeModeBtn.textContent = state.threeMode ? "2D режим" : "3D режим";
+  if (ui.cameraOrbitBtn) {
+    ui.cameraOrbitBtn.textContent = state.cameraOrbitEnabled ? "Камера: ON" : "Камера 3D";
+    ui.cameraOrbitBtn.disabled = !state.threeMode;
+  }
 
   ui.lensBuffs.innerHTML = "";
   if (state.lens.buffNames.length === 0) {
@@ -732,6 +773,8 @@ function updateHud() {
     ui.selectedGunInfo.textContent = "Кликни по пушке на канвасе. Подписи: A/B/C/D/E.";
   } else {
     const gun = world.guns[state.selectedGunIndex];
+    const lensPacket = getLensPacketPreview();
+    const combat = composeCombatStats(gun, lensPacket);
     const buffedLinks = gun.links.filter((link) => link.isBuffed()).length;
     const totalLinks = gun.links.length;
     const zone = zoneName(gun);
@@ -742,11 +785,11 @@ function updateHud() {
       `<div>Скорость атаки: ${gun.fireRate.toFixed(2)}/с</div>`,
       `<div>Дальность: ${gun.range.toFixed(0)}</div>`,
       `<div>Зона атаки: ${zone}</div>`,
-      `<div>Ожог: ${(gun.burnChance * 100).toFixed(0)}%</div>`,
-      `<div>Лёд: ${(gun.iceChance * 100).toFixed(0)}% | Лужа: ${(gun.oilChance * 100).toFixed(0)}%</div>`,
-      `<div>Молния: ${(gun.lightningChance * 100).toFixed(0)}% (${gun.lightningChains} скач.)</div>`,
-      `<div>Маг. множитель: x${gun.magicDamageMultiplier.toFixed(2)}</div>`,
-      `<div>Энергия: x${gun.energyMultiplier.toFixed(2)}</div>`,
+      `<div>Ожог (итог): ${(combat.burnChance * 100).toFixed(0)}%</div>`,
+      `<div>Лёд (итог): ${(combat.iceChance * 100).toFixed(0)}% | Лужа: ${(combat.oilChance * 100).toFixed(0)}%</div>`,
+      `<div>Молния (итог): ${(combat.lightningChance * 100).toFixed(0)}% (${combat.lightningChains} скач., R${combat.lightningRadius.toFixed(0)})</div>`,
+      `<div>Маг. множитель (итог): x${combat.magicScale.toFixed(2)}</div>`,
+      `<div>Энергия: x${gun.energyMultiplier.toFixed(2)} · Линза: x${(lensPacket.energyMultiplier || 1).toFixed(2)} = x${combat.energyScale.toFixed(2)}</div>`,
       `<div>Звенья: ${buffedLinks}/${totalLinks} (макс ${MAX_LINKS_PER_GUN})</div>`,
       `<div>Апгрейды: ${gunUpgradesText(gun)}</div>`,
     ].join("");
@@ -794,7 +837,9 @@ function closeCardModal() {
 function showTargetPick(title, guns, onPick) {
   ui.cardHint.textContent = title;
   ui.targetChoices.innerHTML = "";
+  const lensPacket = getLensPacketPreview();
   guns.forEach((gun, idx) => {
+    const combat = composeCombatStats(gun, lensPacket);
     const buffedLinks = gun.links.filter((link) => link.isBuffed()).length;
     const btn = document.createElement("button");
     btn.className = "target-btn game-card gun-card-choice";
@@ -816,9 +861,9 @@ function showTargetPick(title, guns, onPick) {
       `💥 ${gun.baseDamage}+${gun.flatDamage}<br/>`,
       `✖ ${gun.multiplier.toFixed(2)} | ⚡ ${gun.fireRate.toFixed(2)}/с<br/>`,
       `🎯 ${zoneName(gun)} | 📏 ${gun.range.toFixed(0)}<br/>`,
-      `🔥 ${(gun.burnChance * 100).toFixed(0)}% | ❄ ${(gun.iceChance * 100).toFixed(0)}% | 🛢 ${(gun.oilChance * 100).toFixed(0)}%<br/>`,
-      `⚡ ${(gun.lightningChance * 100).toFixed(0)}% (${gun.lightningChains}) | ✨ x${gun.magicDamageMultiplier.toFixed(2)}<br/>`,
-      `⚛ Энергия: x${gun.energyMultiplier.toFixed(2)}<br/>`,
+      `🔥 ${(combat.burnChance * 100).toFixed(0)}% | ❄ ${(combat.iceChance * 100).toFixed(0)}% | 🛢 ${(combat.oilChance * 100).toFixed(0)}%<br/>`,
+      `⚡ ${(combat.lightningChance * 100).toFixed(0)}% (${combat.lightningChains}) R${combat.lightningRadius.toFixed(0)} | ✨ x${combat.magicScale.toFixed(2)}<br/>`,
+      `⚛ Энергия: x${combat.energyScale.toFixed(2)}<br/>`,
       `🔗 ${buffedLinks}/${MAX_LINKS_PER_GUN}<br/>`,
       `Апгрейды: ${gunUpgradesText(gun)}`,
       `</div>`,
@@ -934,6 +979,7 @@ function spawnEnemy() {
     state.enemyPowerScale,
     durabilityScale
   );
+  enemy.uid = enemyUidSeq++;
   world.enemies.push(enemy);
 }
 
@@ -1042,10 +1088,10 @@ function triggerLightning(startEnemy, combat) {
       x2: next.x,
       y2: next.y,
       crit: false,
-      life: 0.12,
-      color: "rgba(195,238,255,0.95)",
+      life: 0.14,
+      color: "rgba(255,238,80,0.98)",
     });
-    pushParticle(next.x, next.y, { color: "#d8f3ff", size: 2.9, life: 0.2 });
+    pushParticle(next.x, next.y, { color: "#fff08a", size: 3.2, life: 0.24 });
     current = next;
   }
 }
@@ -1061,7 +1107,7 @@ function applyHit(enemy, damage, combat) {
   if (Math.random() < combat.iceChance) {
     const freezeState = enemy.applyFreeze(combat.magicScale);
     enemy.lastHitKind = "magic";
-    pushParticle(enemy.x, enemy.y, { color: freezeState === "extinguish" ? "#cfe9ff" : "#8fd0ff", size: 2.7 });
+    pushParticle(enemy.x, enemy.y, { color: freezeState === "extinguish" ? "#d8ecff" : "#7ecaff", size: 2.9 });
   }
   if (Math.random() < combat.oilChance) createOilPuddle(enemy.x, enemy.y, combat.magicScale);
   triggerLightning(enemy, combat);
@@ -1138,22 +1184,12 @@ function handleShooting(dt) {
     const packet = packets[idx];
     const crit = Math.random() < packet.critChance;
     const critMultiplier = crit ? packet.critMultiplier : 1;
-    const energyScale = gun.energyMultiplier * packet.energyMultiplier;
-    const magicScale = gun.magicDamageMultiplier * energyScale;
+    const combat = composeCombatStats(gun, packet);
     const damage =
       (gun.baseDamage + packet.energy + gun.flatDamage) *
       gun.multiplier *
       critMultiplier *
-      energyScale;
-    const combat = {
-      burnChance: Math.max(0, Math.min(0.95, gun.burnChance + packet.burnChance)),
-      iceChance: Math.max(0, Math.min(0.95, gun.iceChance + packet.iceChance)),
-      oilChance: Math.max(0, Math.min(0.95, gun.oilChance)),
-      lightningChance: Math.max(0, Math.min(0.95, gun.lightningChance + packet.lightningChance)),
-      lightningChains: Math.max(0, Math.round(gun.lightningChains + packet.lightningChains)),
-      lightningRadius: Math.max(0, gun.lightningRadius + packet.lightningRadius),
-      magicScale,
-    };
+      combat.energyScale;
 
     if (gun.attackMode === "shotgun") {
       fireShotgun(gun, damage, combat);
@@ -1454,7 +1490,7 @@ function drawEnemies() {
     ctx.fillStyle = enemy.isBoss
       ? "#a054f0"
       : enemy.freezeStacks > 0
-        ? "#84bbf0"
+        ? "#6ec8ff"
         : enemy.burnStacks > 0
           ? "#eb8a57"
           : "#ca6f6f";
@@ -1529,6 +1565,419 @@ function drawGameOver() {
   ctx.fillText("СТЕНА РАЗРУШЕНА", 228, 270);
 }
 
+const threeView = {
+  ready: false,
+  scene: null,
+  camera: null,
+  renderer: null,
+  engineMesh: null,
+  lensMesh: null,
+  wallMesh: null,
+  gunMeshes: [],
+  enemyMeshes: new Map(),
+  staticBeamGroup: null,
+  dynamicBeamGroup: null,
+  engineLensLine: null,
+  lensGunLines: [],
+  engineLensBeam: null,
+  lensGunBeams: [],
+  orbit: {
+    azimuth: 0,
+    elevation: 0.58,
+    radius: 980,
+    targetX: 0,
+    targetY: 0,
+    targetZ: 0,
+    dragging: false,
+    pointerId: null,
+    lastX: 0,
+    lastY: 0,
+  },
+};
+
+function createBeamRod(THREE, color, radius = 1.6, opacity = 0.82) {
+  const mesh = new THREE.Mesh(
+    new THREE.CylinderGeometry(radius, radius, 1, 10),
+    new THREE.MeshBasicMaterial({
+      color,
+      transparent: true,
+      opacity,
+      depthWrite: false,
+      depthTest: false,
+    })
+  );
+  return mesh;
+}
+
+function placeBeamRod(mesh, p1, p2) {
+  const dir = p2.clone().sub(p1);
+  const len = Math.max(0.001, dir.length());
+  const mid = p1.clone().add(p2).multiplyScalar(0.5);
+  mesh.position.copy(mid);
+  mesh.scale.set(1, len, 1);
+  mesh.quaternion.setFromUnitVectors(new window.THREE.Vector3(0, 1, 0), dir.normalize());
+}
+
+function updateThreeCameraFromOrbit() {
+  if (!threeView.ready) return;
+  const o = threeView.orbit;
+  const planar = o.radius * Math.cos(o.elevation);
+  const z = o.radius * Math.sin(o.elevation);
+  const x = o.targetX + planar * Math.cos(o.azimuth);
+  const y = o.targetY + planar * Math.sin(o.azimuth);
+  threeView.camera.up.set(0, 0, 1);
+  threeView.camera.position.set(x, y, z);
+  threeView.camera.lookAt(o.targetX, o.targetY, o.targetZ);
+}
+
+function worldToThree(x, y, z = 0) {
+  return new window.THREE.Vector3(x - world.width / 2, world.height / 2 - y, z);
+}
+
+function resizeThreeView() {
+  if (!threeView.ready || !ui.threeLayer) return;
+  const rect = ui.threeLayer.getBoundingClientRect();
+  const w = Math.max(1, rect.width);
+  const h = Math.max(1, rect.height);
+  threeView.renderer.setPixelRatio(Math.max(1, Math.min(3, window.devicePixelRatio || 1)));
+  threeView.renderer.setSize(w, h, false);
+  threeView.camera.aspect = w / h;
+  threeView.camera.updateProjectionMatrix();
+}
+
+function initThreeView() {
+  if (threeView.ready || !ui.threeLayer || !window.THREE) return;
+  const THREE = window.THREE;
+  const scene = new THREE.Scene();
+  scene.background = new THREE.Color(0x071322);
+
+  const camera = new THREE.PerspectiveCamera(46, 16 / 9, 1, 5000);
+
+  const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false });
+  renderer.outputColorSpace = THREE.SRGBColorSpace;
+  renderer.domElement.style.width = "100%";
+  renderer.domElement.style.height = "100%";
+  renderer.domElement.style.display = "block";
+  ui.threeLayer.append(renderer.domElement);
+
+  const ambient = new THREE.AmbientLight(0x8cc0ff, 0.7);
+  scene.add(ambient);
+
+  const key = new THREE.DirectionalLight(0x9bd7ff, 0.9);
+  key.position.set(-220, 280, 420);
+  scene.add(key);
+
+  const rim = new THREE.DirectionalLight(0x6ff0c0, 0.55);
+  rim.position.set(300, -200, 280);
+  scene.add(rim);
+
+  const fieldGeo = new THREE.PlaneGeometry(world.width, world.height);
+  const fieldMat = new THREE.MeshStandardMaterial({ color: 0x0b1f34, metalness: 0.05, roughness: 0.92 });
+  const field = new THREE.Mesh(fieldGeo, fieldMat);
+  field.position.z = -30;
+  scene.add(field);
+
+  const engine = new THREE.Mesh(
+    new THREE.SphereGeometry(18, 24, 24),
+    new THREE.MeshStandardMaterial({ color: 0x66e6bc, emissive: 0x1f604e, emissiveIntensity: 0.55 })
+  );
+  scene.add(engine);
+
+  const lens = new THREE.Mesh(
+    new THREE.SphereGeometry(14, 24, 24),
+    new THREE.MeshStandardMaterial({ color: 0x8fd8ff, emissive: 0x255067, emissiveIntensity: 0.4 })
+  );
+  scene.add(lens);
+
+  const wall = new THREE.Mesh(
+    new THREE.BoxGeometry(world.wall.w, world.wall.h, 18),
+    new THREE.MeshStandardMaterial({ color: 0x7de6bb, emissive: 0x204d3d, emissiveIntensity: 0.28 })
+  );
+  scene.add(wall);
+
+  const staticBeamGroup = new THREE.Group();
+  scene.add(staticBeamGroup);
+  const dynamicBeamGroup = new THREE.Group();
+  scene.add(dynamicBeamGroup);
+
+  const buildLine = (color, opacity, width = 2.4) =>
+    new THREE.Line(
+      new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(), new THREE.Vector3()]),
+      new THREE.LineBasicMaterial({
+        color,
+        transparent: true,
+        opacity,
+        depthWrite: false,
+        depthTest: false,
+        linewidth: width,
+      })
+    );
+
+  const engineLensLine = buildLine(0x76f0c6, 0.9, 2.8);
+  staticBeamGroup.add(engineLensLine);
+  const engineLensBeam = createBeamRod(THREE, 0x79f2cb, 1.8, 0.55);
+  staticBeamGroup.add(engineLensBeam);
+
+  const lensGunLines = world.guns.map(() => {
+    const line = buildLine(0x84d4ff, 0.48, 2.1);
+    staticBeamGroup.add(line);
+    return line;
+  });
+  const lensGunBeams = world.guns.map(() => {
+    const rod = createBeamRod(THREE, 0x8cd8ff, 1.25, 0.32);
+    staticBeamGroup.add(rod);
+    return rod;
+  });
+
+  const gunMeshes = world.guns.map(() => {
+    const group = new THREE.Group();
+    const base = new THREE.Mesh(
+      new THREE.CylinderGeometry(15.5, 18.5, 8, 20),
+      new THREE.MeshStandardMaterial({ color: 0x30556f, metalness: 0.35, roughness: 0.36 })
+    );
+    base.rotation.x = Math.PI / 2;
+    const body = new THREE.Mesh(
+      new THREE.CylinderGeometry(8.2, 10.2, 16, 20),
+      new THREE.MeshStandardMaterial({ color: 0x4e88ab, emissive: 0x1f4f68, emissiveIntensity: 0.45 })
+    );
+    body.rotation.x = Math.PI / 2;
+    body.position.z = 6;
+    const barrel = new THREE.Mesh(
+      new THREE.BoxGeometry(18, 5, 5),
+      new THREE.MeshStandardMaterial({ color: 0xa0d2ee, metalness: 0.52, roughness: 0.25 })
+    );
+    barrel.position.set(11, 0, 6);
+    const core = new THREE.Mesh(
+      new THREE.SphereGeometry(4.2, 14, 14),
+      new THREE.MeshStandardMaterial({ color: 0xc9ecff, emissive: 0x69b7e2, emissiveIntensity: 0.9 })
+    );
+    core.position.z = 8;
+    group.add(base);
+    group.add(body);
+    group.add(barrel);
+    group.add(core);
+    group.userData.core = core;
+    scene.add(group);
+    return group;
+  });
+
+  threeView.scene = scene;
+  threeView.camera = camera;
+  threeView.renderer = renderer;
+  threeView.engineMesh = engine;
+  threeView.lensMesh = lens;
+  threeView.wallMesh = wall;
+  threeView.gunMeshes = gunMeshes;
+  threeView.staticBeamGroup = staticBeamGroup;
+  threeView.dynamicBeamGroup = dynamicBeamGroup;
+  threeView.engineLensLine = engineLensLine;
+  threeView.lensGunLines = lensGunLines;
+  threeView.engineLensBeam = engineLensBeam;
+  threeView.lensGunBeams = lensGunBeams;
+  threeView.ready = true;
+  threeView.orbit.azimuth = -Math.PI / 2;
+  threeView.orbit.elevation = 0.58;
+  threeView.orbit.radius = 980;
+  threeView.orbit.targetX = 0;
+  threeView.orbit.targetY = 0;
+  threeView.orbit.targetZ = 0;
+  updateThreeCameraFromOrbit();
+  resizeThreeView();
+}
+
+function ensureEnemyMesh(enemy) {
+  if (!threeView.ready) return null;
+  const existing = threeView.enemyMeshes.get(enemy.uid);
+  if (existing) return existing;
+  const THREE = window.THREE;
+  const mesh = new THREE.Mesh(
+    new THREE.SphereGeometry(Math.max(8, enemy.radius), 20, 20),
+    new THREE.MeshStandardMaterial({ color: enemy.isBoss ? 0xa054f0 : 0xca6f6f, emissive: 0x2c2030, emissiveIntensity: 0.35 })
+  );
+  threeView.scene.add(mesh);
+  threeView.enemyMeshes.set(enemy.uid, mesh);
+  return mesh;
+}
+
+function syncThreeWorld(now) {
+  if (!threeView.ready) return;
+  const THREE = window.THREE;
+
+  const ePos = worldToThree(world.enginePos.x, world.enginePos.y, 8);
+  threeView.engineMesh.position.copy(ePos);
+  threeView.engineMesh.scale.setScalar(1 + Math.sin(now * 0.004) * 0.04);
+
+  const lPos = worldToThree(world.lensPos.x, world.lensPos.y, 8);
+  threeView.lensMesh.position.copy(lPos);
+  threeView.lensMesh.scale.setScalar(1 + Math.sin(now * 0.006) * 0.03);
+
+  if (threeView.engineLensLine) {
+    const points = [ePos.clone(), lPos.clone()];
+    threeView.engineLensLine.geometry.setFromPoints(points);
+  }
+  if (threeView.engineLensBeam) placeBeamRod(threeView.engineLensBeam, ePos, lPos);
+
+  const wallPos = worldToThree(world.wall.x + world.wall.w / 2, world.wall.y + world.wall.h / 2, 4);
+  threeView.wallMesh.position.copy(wallPos);
+  const wallHpScale = Math.max(0.1, state.wallHp / WALL_HP_MAX);
+  threeView.wallMesh.scale.set(1, wallHpScale, 1);
+
+  world.guns.forEach((gun, idx) => {
+    const mesh = threeView.gunMeshes[idx];
+    if (!mesh) return;
+    const p = worldToThree(gun.x, gun.y, 10);
+    mesh.position.copy(p);
+    const line = threeView.lensGunLines[idx];
+    if (line) line.geometry.setFromPoints([lPos.clone(), p.clone()]);
+    const rod = threeView.lensGunBeams[idx];
+    if (rod) placeBeamRod(rod, lPos, p);
+    const pulse = idx === state.selectedGunIndex ? 1.2 : 1;
+    mesh.scale.set(pulse, pulse, pulse);
+    const target = pickGunTarget(gun);
+    const targetAngle = target ? -Math.atan2(target.y - gun.y, target.x - gun.x) : 0;
+    const currentAngle = mesh.rotation.z || 0;
+    mesh.rotation.z = currentAngle + (targetAngle - currentAngle) * 0.22;
+    if (mesh.userData.core?.material) {
+      mesh.userData.core.material.emissiveIntensity = idx === state.selectedGunIndex ? 1.35 : 0.9;
+    }
+  });
+
+  const seen = new Set();
+  for (const enemy of world.enemies) {
+    if (!enemy.alive()) continue;
+    const mesh = ensureEnemyMesh(enemy);
+    if (!mesh) continue;
+    seen.add(enemy.uid);
+    const p = worldToThree(enemy.x, enemy.y, 9);
+    mesh.position.copy(p);
+    const color = enemy.isBoss ? 0xa054f0 : enemy.freezeStacks > 0 ? 0x6ec8ff : enemy.burnStacks > 0 ? 0xeb8a57 : 0xca6f6f;
+    mesh.material.color.setHex(color);
+    const emissive = enemy.freezeStacks > 0 ? 0x174b79 : enemy.burnStacks > 0 ? 0x5a2a15 : 0x322023;
+    mesh.material.emissive.setHex(emissive);
+  }
+
+  for (const [uid, mesh] of threeView.enemyMeshes.entries()) {
+    if (seen.has(uid)) continue;
+    threeView.scene.remove(mesh);
+    if (mesh.geometry) mesh.geometry.dispose();
+    if (mesh.material) mesh.material.dispose();
+    threeView.enemyMeshes.delete(uid);
+  }
+
+  const bgPulse = 0.08 + Math.sin(now * 0.0015) * 0.02;
+  threeView.scene.fog = new THREE.Fog(0x071322, 700, 1300 + bgPulse * 1000);
+
+  while (threeView.dynamicBeamGroup.children.length > 0) {
+    const line = threeView.dynamicBeamGroup.children.pop();
+    threeView.dynamicBeamGroup.remove(line);
+    if (line.geometry) line.geometry.dispose();
+    if (line.material) line.material.dispose();
+  }
+  for (const beam of world.beams) {
+    const p1 = worldToThree(beam.x1, beam.y1, 24);
+    const p2 = worldToThree(beam.x2, beam.y2, 24);
+    const lineColor = beam.color?.includes("255,238,80") ? 0xffee50 : beam.crit ? 0xffdc78 : 0x8ce0ff;
+    const line = new THREE.Line(
+      new THREE.BufferGeometry().setFromPoints([p1, p2]),
+      new THREE.LineBasicMaterial({
+        color: lineColor,
+        transparent: true,
+        opacity: Math.max(0.35, Math.min(1, (beam.life || 0.08) / 0.13)),
+        depthWrite: false,
+        depthTest: false,
+      })
+    );
+    threeView.dynamicBeamGroup.add(line);
+
+    const rod = createBeamRod(THREE, lineColor, beam.crit ? 2.25 : 1.7, 0.72);
+    placeBeamRod(rod, p1, p2);
+    threeView.dynamicBeamGroup.add(rod);
+
+    const flareMat = new THREE.MeshBasicMaterial({
+      color: lineColor,
+      transparent: true,
+      opacity: 0.8,
+      depthWrite: false,
+      depthTest: false,
+    });
+    const flare1 = new THREE.Mesh(new THREE.SphereGeometry(2.6, 12, 12), flareMat.clone());
+    flare1.position.copy(p1);
+    const flare2 = new THREE.Mesh(new THREE.SphereGeometry(3.2, 12, 12), flareMat);
+    flare2.position.copy(p2);
+    threeView.dynamicBeamGroup.add(flare1);
+    threeView.dynamicBeamGroup.add(flare2);
+  }
+}
+
+function renderThreeMode(now) {
+  if (!state.threeMode) return;
+  if (!threeView.ready) initThreeView();
+  if (!threeView.ready) return;
+  syncThreeWorld(now);
+  threeView.renderer.render(threeView.scene, threeView.camera);
+}
+
+function setThreeMode(enabled) {
+  state.threeMode = Boolean(enabled);
+  if (ui.board) ui.board.classList.toggle("three-active", state.threeMode);
+  if (state.threeMode) initThreeView();
+  if (!state.threeMode) state.cameraOrbitEnabled = false;
+  if (ui.threeLayer) ui.threeLayer.style.pointerEvents = state.threeMode && state.cameraOrbitEnabled ? "auto" : "none";
+  resizeThreeView();
+  updateHud();
+}
+
+function setCameraOrbitEnabled(enabled) {
+  state.cameraOrbitEnabled = Boolean(enabled) && state.threeMode;
+  if (ui.threeLayer) ui.threeLayer.style.pointerEvents = state.cameraOrbitEnabled ? "auto" : "none";
+  if (!state.cameraOrbitEnabled) {
+    threeView.orbit.dragging = false;
+    threeView.orbit.pointerId = null;
+  }
+  updateHud();
+}
+
+function onThreePointerDown(event) {
+  if (!state.threeMode || !state.cameraOrbitEnabled || !threeView.ready) return;
+  event.preventDefault();
+  threeView.orbit.dragging = true;
+  threeView.orbit.pointerId = event.pointerId;
+  threeView.orbit.lastX = event.clientX;
+  threeView.orbit.lastY = event.clientY;
+  ui.threeLayer.setPointerCapture?.(event.pointerId);
+}
+
+function onThreePointerMove(event) {
+  const o = threeView.orbit;
+  if (!state.threeMode || !state.cameraOrbitEnabled || !o.dragging) return;
+  if (o.pointerId !== null && event.pointerId !== o.pointerId) return;
+  event.preventDefault();
+  const dx = event.clientX - o.lastX;
+  const dy = event.clientY - o.lastY;
+  o.lastX = event.clientX;
+  o.lastY = event.clientY;
+  o.azimuth -= dx * 0.008;
+  o.elevation = Math.max(0.25, Math.min(1.1, o.elevation + dy * 0.0048));
+  updateThreeCameraFromOrbit();
+}
+
+function onThreePointerUp(event) {
+  const o = threeView.orbit;
+  if (o.pointerId !== null && event.pointerId !== o.pointerId) return;
+  o.dragging = false;
+  o.pointerId = null;
+  ui.threeLayer.releasePointerCapture?.(event.pointerId);
+}
+
+function onThreeWheel(event) {
+  if (!state.threeMode || !state.cameraOrbitEnabled || !threeView.ready) return;
+  event.preventDefault();
+  const o = threeView.orbit;
+  const next = o.radius * (1 + event.deltaY * 0.0012);
+  o.radius = Math.max(560, Math.min(1500, next));
+  updateThreeCameraFromOrbit();
+}
+
 function render(now) {
   drawBackground();
   drawZones();
@@ -1547,6 +1996,7 @@ function setupCanvasForDpr() {
   canvas.width = Math.round(LOGICAL_WIDTH * currentDpr);
   canvas.height = Math.round(LOGICAL_HEIGHT * currentDpr);
   ctx.setTransform(currentDpr, 0, 0, currentDpr, 0, 0);
+  resizeThreeView();
 }
 
 function update(dt) {
@@ -1563,6 +2013,7 @@ function frame(now) {
   state.lastTime = now;
   update(dt);
   render(now);
+  renderThreeMode(now);
   updateHud();
   requestAnimationFrame(frame);
 }
@@ -1669,6 +2120,28 @@ function init() {
       state.userPaused = !state.userPaused;
       updateHud();
     });
+  }
+  if (ui.threeModeBtn) {
+    ui.threeModeBtn.addEventListener("click", () => {
+      if (!window.THREE) {
+        logLine("3D режим недоступен: three.js не загружен.");
+        return;
+      }
+      setThreeMode(!state.threeMode);
+    });
+  }
+  if (ui.cameraOrbitBtn) {
+    ui.cameraOrbitBtn.addEventListener("click", () => {
+      if (!state.threeMode) return;
+      setCameraOrbitEnabled(!state.cameraOrbitEnabled);
+    });
+  }
+  if (ui.threeLayer) {
+    ui.threeLayer.addEventListener("pointerdown", onThreePointerDown);
+    ui.threeLayer.addEventListener("pointermove", onThreePointerMove);
+    ui.threeLayer.addEventListener("pointerup", onThreePointerUp);
+    ui.threeLayer.addEventListener("pointercancel", onThreePointerUp);
+    ui.threeLayer.addEventListener("wheel", onThreeWheel, { passive: false });
   }
   beginWave(1);
   logLine("Старт TD: монстры двигаются справа налево к стене.");

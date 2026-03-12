@@ -49,6 +49,22 @@ body {
   height: auto;
   display: block;
   touch-action: none;
+  transition: opacity 0.2s ease;
+}
+
+.board.three-active #gameCanvas {
+  opacity: 0;
+}
+
+.three-layer {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  display: none;
+}
+
+.board.three-active .three-layer {
+  display: block;
 }
 
 .restart-btn {
@@ -94,7 +110,7 @@ body {
 
 .hud-controls {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 0.55rem;
 }
 
