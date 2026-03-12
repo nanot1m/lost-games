@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Lost Games TD</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;600;700;800&family=Space+Grotesk:wght@500;700&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <main class="layout">
+      <section class="board">
+        <canvas id="gameCanvas" width="960" height="540"></canvas>
+      </section>
+
+      <aside class="hud">
+        <h1>Lost Games TD</h1>
+        <p>Схема поля: движок -> линза -> пушки -> стена -> монстры (справа налево).</p>
+
+        <div class="stats">
+          <div class="stat"><span>Волна</span><strong id="waveStat">1</strong></div>
+          <div class="stat"><span>Убийства</span><strong id="killsStat">0</strong></div>
+          <div class="stat"><span>HP стены</span><strong id="baseHpStat">20</strong></div>
+          <div class="stat"><span>До карточки</span><strong id="nextCardStat">3</strong></div>
+        </div>
+
+        <div class="panel">
+          <h2>Линза</h2>
+          <div id="lensBuffs" class="chips"></div>
+        </div>
+
+        <div class="panel">
+          <h2>Выбранная пушка</h2>
+          <div id="selectedGunInfo">Кликни по пушке на карте.</div>
+        </div>
+
+        <div class="panel">
+          <h2>Лог</h2>
+          <div id="log" class="log"></div>
+        </div>
+      </aside>
+    </main>
+
+    <div id="cardModal" class="modal hidden">
+      <div class="modal-box">
+        <h3>Выбери 1 из 3 карточек</h3>
+        <p id="cardHint">Игра на паузе, пока карточка не выбрана.</p>
+        <div id="cardChoices" class="card-list"></div>
+        <div id="targetChoices" class="target-list"></div>
+      </div>
+    </div>
+
+    <script src="./app.js"></script>
+  </body>
+</html>

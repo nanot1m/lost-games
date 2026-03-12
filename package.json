@@ -1,0 +1,10 @@
+{
+  "name": "lost-games",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Browser prototype for energy lens game mechanics",
+  "scripts": {
+    "start": "node server.js",
+    "run": "node --check app.js && node --check game.js"
+  }
+}
