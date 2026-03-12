@@ -22,7 +22,17 @@ class Lens {
   distribute(totalEnergy, count) {
     const perGun = totalEnergy / count;
     return Array.from({ length: count }, () => {
-      let packet = { energy: perGun, burnChance: 0, critChance: 0, critMultiplier: 1.5 };
+      let packet = {
+        energy: perGun,
+        energyMultiplier: 1,
+        burnChance: 0,
+        iceChance: 0,
+        lightningChance: 0,
+        lightningChains: 0,
+        lightningRadius: 0,
+        critChance: 0,
+        critMultiplier: 1.5,
+      };
       for (const effect of this.effects) packet = effect(packet);
       return packet;
     });
@@ -67,6 +77,7 @@ class Gun {
     this.shotgunSpread = 0;
     this.fireRate = 3;
     this.cooldown = 0;
+    this.energyMultiplier = 1;
     this.flatDamage = 0;
     this.multiplier = 1;
     this.burnChance = 0;
@@ -82,11 +93,11 @@ class Gun {
   setAttackProfile(profile) {
     if (profile === "sniper") {
       this.attackMode = "sniper";
-      this.range = 360;
-      this.verticalBand = 34;
+      this.range = 1200;
+      this.verticalBand = 270;
       this.shotgunPellets = 0;
       this.shotgunSpread = 0;
-      this.baseFireRate = 2.3;
+      this.baseFireRate = 0.72;
       return;
     }
     if (profile === "shotgun") {
@@ -123,6 +134,7 @@ class Gun {
   }
 
   recomputeFromLinks() {
+    this.energyMultiplier = 1;
     this.flatDamage = 0;
     this.multiplier = 1;
     this.burnChance = 0;
@@ -149,6 +161,7 @@ class Gun {
       this.lightningChains += effect.lightningChains || 0;
       this.lightningRadius += effect.lightningRadius || 0;
       this.magicDamageMultiplier *= effect.magicDamageMultiplier || 1;
+      this.energyMultiplier *= effect.energyMultiplier || 1;
       this.range += effect.rangeBonus || 0;
       if (effect.attackProfile) this.setAttackProfile(effect.attackProfile);
       fireRateMultiplier *= effect.fireRateMultiplier || 1;
@@ -162,6 +175,7 @@ class Gun {
     this.lightningChains = Math.max(0, Math.round(this.lightningChains));
     this.lightningRadius = Math.max(0, this.lightningRadius);
     this.magicDamageMultiplier = Math.max(0.4, Math.min(4, this.magicDamageMultiplier));
+    this.energyMultiplier = Math.max(0.4, Math.min(3, this.energyMultiplier));
   }
 }
 
@@ -175,19 +189,21 @@ class Enemy {
     const baseHp = isBoss ? 560 + wave * 80 : 48 + wave * 14;
     const baseSpeed = isBoss ? 38 + wave * 0.9 : 62 + wave * 2.1;
     const durability = durabilityScale || 1;
+    const firstBossEase = isBoss && wave === 5 ? 0.82 : 1;
 
-    this.maxHp = baseHp * powerScale * durability;
+    this.maxHp = baseHp * powerScale * durability * firstBossEase;
     this.hp = this.maxHp;
     this.radius = baseRadius * (0.84 + 0.52 * Math.sqrt(durability));
     const durabilitySpeedPenalty = Math.max(0.42, Math.min(1.45, 1 / Math.pow(durability, 0.72)));
     const wavePowerBoost = Math.min(1.6, 1 + (powerScale - 1) * 0.2);
-    this.speed = baseSpeed * wavePowerBoost * durabilitySpeedPenalty;
+    this.speed = baseSpeed * wavePowerBoost * durabilitySpeedPenalty * (isBoss && wave === 5 ? 0.92 : 1);
     this.burnStacks = 0;
     this.burnTimer = 0;
     this.burnPower = 1;
     this.freezeStacks = 0;
     this.freezeTimer = 0;
     this.freezePower = 1;
+    this.lastHitKind = "physical";
     this.reachedWall = false;
   }
 
@@ -245,146 +261,205 @@ class Enemy {
 const BOSS_EVERY_WAVES = 5;
 const MAX_LINKS_PER_GUN = 8;
 const SPAWN_INTERVAL = 0.65;
-const WAVE_SIZE = (wave) => 6 + Math.floor(wave * 1.15);
+const WAVE_SIZE = (wave) => (wave <= 3 ? 4 + wave : 5 + Math.floor(wave * 1.1));
 const ENEMY_POWER_PER_BOSS = 1.15;
 const WALL_DAMAGE_NORMAL_BASE = 0.75;
 const WALL_DAMAGE_BOSS_BASE = 4.2;
 const WALL_HP_MAX = 30;
+const REGULAR_CARD_CHOICES = 5;
+const RARITY_COLORS = {
+  common: "#8f9aa7",
+  rare: "#5da8ff",
+  legendary: "#ffb35c",
+};
+const RARITY_WEIGHTS = {
+  common: 72,
+  rare: 22,
+  legendary: 6,
+};
 
 const LINK_CARDS = [
   {
     id: "gun_flat",
     target: "link",
     name: "Усиленный ствол",
-    description: "+10 урона, но -10% скорости атаки",
-    color: "#ffb86b",
-    effect: { flatDamage: 10, fireRateMultiplier: 0.9 },
+    rarity: "common",
+    color: RARITY_COLORS.common,
+    description: "+2 урона",
+    effect: { flatDamage: 2 },
   },
   {
     id: "gun_mult",
     target: "link",
     name: "Фокус-катушка",
-    description: "x1.35 урона, но -18% скорости атаки",
-    color: "#ffd86e",
-    effect: { damageMultiplier: 1.35, fireRateMultiplier: 0.82 },
+    rarity: "legendary",
+    color: RARITY_COLORS.legendary,
+    description: "x1.9 урона, но -22% скорости атаки",
+    effect: { damageMultiplier: 1.9, fireRateMultiplier: 0.78 },
   },
   {
     id: "gun_burn",
     target: "link",
     name: "Термоядро",
-    description: "+35% шанс поджога, но -4 урона",
-    color: "#ff7f6e",
-    effect: { burnChance: 0.35, flatDamage: -4 },
+    rarity: "common",
+    color: RARITY_COLORS.common,
+    description: "+12% шанс поджога",
+    effect: { burnChance: 0.12 },
   },
   {
     id: "gun_lightning",
     target: "link",
     name: "Цепная молния",
-    description: "22% шанс молнии (3 скачка), но -12% урона",
-    color: "#d8f0ff",
-    effect: { lightningChance: 0.22, lightningChains: 3, lightningRadius: 130, damageMultiplier: 0.88 },
+    rarity: "rare",
+    color: RARITY_COLORS.rare,
+    description: "26% шанс молнии (2 скачка), но -8% урона",
+    effect: { lightningChance: 0.26, lightningChains: 2, lightningRadius: 130, damageMultiplier: 0.92 },
   },
   {
     id: "gun_ice",
     target: "link",
     name: "Ледяной контур",
-    description: "28% шанс льда (замедление+дот), но -8% скорости атаки",
-    color: "#9bd5ff",
-    effect: { iceChance: 0.28, fireRateMultiplier: 0.92 },
+    rarity: "rare",
+    color: RARITY_COLORS.rare,
+    description: "28% шанс льда, но -10% скорости атаки",
+    effect: { iceChance: 0.28, fireRateMultiplier: 0.9 },
   },
   {
     id: "gun_oil",
     target: "link",
     name: "Масляный распыл",
-    description: "18% шанс создать лужу, но -6 урона",
-    color: "#7f8a9f",
-    effect: { oilChance: 0.18, flatDamage: -6 },
+    rarity: "common",
+    color: RARITY_COLORS.common,
+    description: "12% шанс создать масляную лужу",
+    effect: { oilChance: 0.12 },
   },
   {
     id: "gun_magic_amp",
     target: "link",
     name: "Магический фокус",
-    description: "+40% маг. урону (огонь/лёд/молнии), но -14% физ. урона",
-    color: "#d6a7ff",
-    effect: { magicDamageMultiplier: 1.4, damageMultiplier: 0.86 },
+    rarity: "legendary",
+    color: RARITY_COLORS.legendary,
+    description: "+70% маг. урону, но -25% физ. урона и -10% скорости атаки",
+    effect: { magicDamageMultiplier: 1.7, damageMultiplier: 0.75, fireRateMultiplier: 0.9 },
   },
   {
     id: "gun_aspd_1",
     target: "link",
     name: "Разгон затвора",
-    description: "+25% скорости атаки, но -12% урона",
-    color: "#80e6ff",
-    effect: { fireRateMultiplier: 1.25, damageMultiplier: 0.88 },
+    rarity: "common",
+    color: RARITY_COLORS.common,
+    description: "+12% скорости атаки",
+    effect: { fireRateMultiplier: 1.12 },
   },
   {
     id: "gun_aspd_2",
     target: "link",
     name: "Турбо-автоматика",
-    description: "+45% скорости атаки, но -20% урона и -20 дальности",
-    color: "#4bc7ff",
-    effect: { fireRateMultiplier: 1.45, damageMultiplier: 0.8, rangeBonus: -20 },
+    rarity: "legendary",
+    color: RARITY_COLORS.legendary,
+    description: "+80% скорости атаки, но -22% урона и -25 дальности",
+    effect: { fireRateMultiplier: 1.8, damageMultiplier: 0.78, rangeBonus: -25 },
   },
   {
     id: "gun_sniper",
     target: "link",
     name: "Снайперский ствол",
-    description: "Профиль: узкая дальняя горизонталь",
-    color: "#c9a6ff",
-    effect: { attackProfile: "sniper" },
+    rarity: "rare",
+    color: RARITY_COLORS.rare,
+    description: "Снайпер-профиль, но -30% скорости атаки",
+    effect: { attackProfile: "sniper", fireRateMultiplier: 0.7 },
   },
   {
     id: "gun_shotgun",
     target: "link",
     name: "Дробовик",
-    description: "Профиль: широкая дробь по вертикали",
-    color: "#8ad4ff",
-    effect: { attackProfile: "shotgun" },
+    rarity: "rare",
+    color: RARITY_COLORS.rare,
+    description: "Дробовой профиль, но -18% урона",
+    effect: { attackProfile: "shotgun", damageMultiplier: 0.82 },
   },
   {
     id: "link_x2",
     target: "link",
     name: "Резонатор",
-    description: "x2 урона, но -30% скорости атаки и -15% шанса ожога",
-    color: "#7dff9d",
-    effect: { multiplier: 2, fireRateMultiplier: 0.7, burnChance: -0.15 },
+    rarity: "legendary",
+    color: RARITY_COLORS.legendary,
+    description: "x2 урона, но -35% скорости атаки и -20% шанса ожога",
+    effect: { multiplier: 2, fireRateMultiplier: 0.65, burnChance: -0.2 },
   },
   {
     id: "link_x15",
     target: "link",
     name: "Стабилизатор",
-    description: "x1.5 урона, но -15% скорости атаки",
-    color: "#54f0b3",
-    effect: { multiplier: 1.5, fireRateMultiplier: 0.85 },
+    rarity: "rare",
+    color: RARITY_COLORS.rare,
+    description: "x1.35 урона, но -8% скорости атаки",
+    effect: { multiplier: 1.35, fireRateMultiplier: 0.92 },
   },
 ];
 
 const LENS_CARDS = [
   {
-    id: "lens_burn",
-    target: "lens",
-    name: "Линза жара",
-    description: "Луч даёт +20% шанса ожога всем пушкам",
-    applyLens: (lens) => lens.addBuff("Жар", (p) => ({ ...p, burnChance: p.burnChance + 0.2 })),
-  },
-  {
-    id: "lens_crit",
-    target: "lens",
-    name: "Линза точности",
-    description: "Луч даёт +16% крита и x1.85 крит-урон",
-    applyLens: (lens) =>
-      lens.addBuff("Точность", (p) => ({ ...p, critChance: p.critChance + 0.16, critMultiplier: 1.85 })),
-  },
-  {
     id: "lens_flux",
     target: "lens",
     name: "Линза потока",
-    description: "Луч даёт +20% энергии каждому выстрелу",
-    applyLens: (lens) => lens.addBuff("Поток", (p) => ({ ...p, energy: p.energy * 1.2 })),
+    rarity: "common",
+    color: RARITY_COLORS.common,
+    description: "Луч даёт +18% энергии каждому выстрелу",
+    applyLens: (lens) =>
+      lens.addBuff("Поток", (p) => ({ ...p, energyMultiplier: p.energyMultiplier * 1.18 })),
+  },
+  {
+    id: "lens_pyro",
+    target: "lens",
+    name: "Линза жара",
+    rarity: "rare",
+    color: RARITY_COLORS.rare,
+    description: "Луч даёт +20% шанса ожога всем пушкам, но -8% энергии",
+    applyLens: (lens) =>
+      lens.addBuff("Жар", (p) => ({
+        ...p,
+        burnChance: p.burnChance + 0.2,
+        energyMultiplier: p.energyMultiplier * 0.92,
+      })),
+  },
+  {
+    id: "lens_frost",
+    target: "lens",
+    name: "Линза мороза",
+    rarity: "rare",
+    color: RARITY_COLORS.rare,
+    description: "Луч даёт +18% шанса льда всем пушкам, но -8% энергии",
+    applyLens: (lens) =>
+      lens.addBuff("Мороз", (p) => ({
+        ...p,
+        iceChance: p.iceChance + 0.18,
+        energyMultiplier: p.energyMultiplier * 0.92,
+      })),
+  },
+  {
+    id: "lens_storm",
+    target: "lens",
+    name: "Линза грозы",
+    rarity: "legendary",
+    color: RARITY_COLORS.legendary,
+    description: "Луч даёт +14% шанса молнии (+1 скачок, +70 радиус), но -15% энергии",
+    applyLens: (lens) =>
+      lens.addBuff("Гроза", (p) => ({
+        ...p,
+        lightningChance: p.lightningChance + 0.14,
+        lightningChains: p.lightningChains + 1,
+        lightningRadius: p.lightningRadius + 70,
+        energyMultiplier: p.energyMultiplier * 0.85,
+      })),
   },
 ];
 
 const canvas = document.getElementById("gameCanvas");
 const ctx = canvas.getContext("2d");
+const LOGICAL_WIDTH = 960;
+const LOGICAL_HEIGHT = 540;
+let currentDpr = 1;
 
 const ui = {
   wave: document.getElementById("waveStat"),
@@ -395,15 +470,21 @@ const ui = {
   selectedGunInfo: document.getElementById("selectedGunInfo"),
   log: document.getElementById("log"),
   modal: document.getElementById("cardModal"),
+  cardModalTitle: document.getElementById("cardModalTitle"),
   cardHint: document.getElementById("cardHint"),
   cardChoices: document.getElementById("cardChoices"),
   targetChoices: document.getElementById("targetChoices"),
   restartBtn: document.getElementById("restartBtn"),
+  cardsInfoBtn: document.getElementById("cardsInfoBtn"),
+  cardsInfoModal: document.getElementById("cardsInfoModal"),
+  cardsInfoBody: document.getElementById("cardsInfoBody"),
+  cardsInfoCloseBtn: document.getElementById("cardsInfoCloseBtn"),
+  pauseBtn: document.getElementById("pauseBtn"),
 };
 
 const world = {
-  width: canvas.width,
-  height: canvas.height,
+  width: LOGICAL_WIDTH,
+  height: LOGICAL_HEIGHT,
   enginePos: { x: 90, y: 270 },
   lensPos: { x: 220, y: 270 },
   guns: [
@@ -421,6 +502,7 @@ const world = {
   beams: [],
   particles: [],
   puddles: [],
+  explosions: [],
 };
 
 const state = {
@@ -436,6 +518,7 @@ const state = {
   selectedGunIndex: -1,
   draggingGunIndex: -1,
   pausedByCards: false,
+  userPaused: false,
   gameOver: false,
   pendingRegularCardRewards: 0,
   pendingBossLensRewards: 0,
@@ -459,8 +542,17 @@ function randomPick(pool, count) {
   const src = [...pool];
   const selected = [];
   while (selected.length < count && src.length > 0) {
-    const idx = Math.floor(Math.random() * src.length);
-    selected.push(src.splice(idx, 1)[0]);
+    const totalWeight = src.reduce((sum, card) => sum + (RARITY_WEIGHTS[card.rarity] || 1), 0);
+    let roll = Math.random() * totalWeight;
+    let pickIdx = 0;
+    for (let i = 0; i < src.length; i += 1) {
+      roll -= RARITY_WEIGHTS[src[i].rarity] || 1;
+      if (roll <= 0) {
+        pickIdx = i;
+        break;
+      }
+    }
+    selected.push(src.splice(pickIdx, 1)[0]);
   }
   return selected;
 }
@@ -480,6 +572,61 @@ function zoneName(gun) {
   return "Круг";
 }
 
+function rarityLabel(card) {
+  if (card.rarity === "legendary") return "ЛЕГЕНДАРНАЯ";
+  if (card.rarity === "rare") return "РЕДКАЯ";
+  return "ОБЫЧНАЯ";
+}
+
+function rarityChanceByCard(card, pool) {
+  const sameRarity = pool.filter((c) => c.rarity === card.rarity).length;
+  const rarityWeight = RARITY_WEIGHTS[card.rarity] || 0;
+  if (!sameRarity || !rarityWeight) return 0;
+  const weightTotal = Object.values(RARITY_WEIGHTS).reduce((a, b) => a + b, 0);
+  return (rarityWeight / weightTotal / sameRarity) * 100;
+}
+
+function rarityChipHtml(card) {
+  const color = card.color || "#8f9aa7";
+  return `<span class="rarity-chip" style="border-color:${color};color:${color};">${card.rarity}</span>`;
+}
+
+function renderCardsInfoTable() {
+  if (!ui.cardsInfoBody) return;
+  const all = [
+    ...LINK_CARDS.map((c) => ({ ...c, source: "Обычная награда" })),
+    ...LENS_CARDS.map((c) => ({ ...c, source: "Награда за босса" })),
+  ];
+  const linkPool = LINK_CARDS;
+  const lensPool = LENS_CARDS;
+
+  ui.cardsInfoBody.innerHTML = "";
+  all.forEach((card) => {
+    const pool = card.source === "Награда за босса" ? lensPool : linkPool;
+    const chance = rarityChanceByCard(card, pool);
+    const row = document.createElement("tr");
+    row.innerHTML = [
+      `<td>${cardIcon(card)} ${card.name}</td>`,
+      `<td>${card.source}</td>`,
+      `<td>${rarityChipHtml(card)}</td>`,
+      `<td>${chance.toFixed(1)}%</td>`,
+      `<td>${card.description}</td>`,
+    ].join("");
+    ui.cardsInfoBody.append(row);
+  });
+}
+
+function openCardsInfoModal() {
+  if (!ui.cardsInfoModal) return;
+  renderCardsInfoTable();
+  ui.cardsInfoModal.classList.remove("hidden");
+}
+
+function closeCardsInfoModal() {
+  if (!ui.cardsInfoModal) return;
+  ui.cardsInfoModal.classList.add("hidden");
+}
+
 function cardIcon(card) {
   const id = card.id || "";
   if (id.includes("flat")) return "💥";
@@ -495,6 +642,22 @@ function cardIcon(card) {
   if (id.includes("x2") || id.includes("x15")) return "🔗";
   if (id.includes("lens")) return "🔮";
   return "🃏";
+}
+
+function linkBuffIcon(link) {
+  const id = link?.cardId || "";
+  if (id.includes("flat")) return "💥";
+  if (id.includes("mult")) return "✖";
+  if (id.includes("burn")) return "🔥";
+  if (id.includes("lightning")) return "⚡";
+  if (id.includes("ice")) return "❄";
+  if (id.includes("oil")) return "🛢";
+  if (id.includes("magic")) return "✨";
+  if (id.includes("aspd")) return "⏩";
+  if (id.includes("sniper")) return "🎯";
+  if (id.includes("shotgun")) return "🔫";
+  if (id.includes("x2") || id.includes("x15")) return "🔗";
+  return "⬢";
 }
 
 function cardArtSeed(card) {
@@ -548,6 +711,7 @@ function updateHud() {
   ui.baseHp.textContent = String(Math.max(0, state.wallHp).toFixed(1));
   ui.nextCard.textContent = state.pendingRegularCardRewards > 0 ? "0" : "1";
   ui.restartBtn.classList.toggle("hidden", !state.gameOver);
+  if (ui.pauseBtn) ui.pauseBtn.textContent = state.userPaused ? "Продолжить" : "Пауза";
 
   ui.lensBuffs.innerHTML = "";
   if (state.lens.buffNames.length === 0) {
@@ -582,6 +746,7 @@ function updateHud() {
       `<div>Лёд: ${(gun.iceChance * 100).toFixed(0)}% | Лужа: ${(gun.oilChance * 100).toFixed(0)}%</div>`,
       `<div>Молния: ${(gun.lightningChance * 100).toFixed(0)}% (${gun.lightningChains} скач.)</div>`,
       `<div>Маг. множитель: x${gun.magicDamageMultiplier.toFixed(2)}</div>`,
+      `<div>Энергия: x${gun.energyMultiplier.toFixed(2)}</div>`,
       `<div>Звенья: ${buffedLinks}/${totalLinks} (макс ${MAX_LINKS_PER_GUN})</div>`,
       `<div>Апгрейды: ${gunUpgradesText(gun)}</div>`,
     ].join("");
@@ -591,6 +756,7 @@ function updateHud() {
 function openCardModal(cards, hint, onPick) {
   state.pausedByCards = true;
   ui.modal.classList.remove("hidden");
+  if (ui.cardModalTitle) ui.cardModalTitle.textContent = `Выбери 1 из ${cards.length} карточек`;
   ui.cardHint.textContent = hint;
   ui.cardChoices.innerHTML = "";
   ui.targetChoices.innerHTML = "";
@@ -604,7 +770,7 @@ function openCardModal(cards, hint, onPick) {
     btn.innerHTML = [
       `<div class="game-card-top">`,
       `<span class="game-card-icon">${cardIcon(card)}</span>`,
-      `<span class="game-card-type">${card.target.toUpperCase()}</span>`,
+      `<span class="game-card-type">${rarityLabel(card)}</span>`,
       `<strong class="game-card-title">${card.name}</strong>`,
       `</div>`,
       `<div class="game-card-art"></div>`,
@@ -652,6 +818,7 @@ function showTargetPick(title, guns, onPick) {
       `🎯 ${zoneName(gun)} | 📏 ${gun.range.toFixed(0)}<br/>`,
       `🔥 ${(gun.burnChance * 100).toFixed(0)}% | ❄ ${(gun.iceChance * 100).toFixed(0)}% | 🛢 ${(gun.oilChance * 100).toFixed(0)}%<br/>`,
       `⚡ ${(gun.lightningChance * 100).toFixed(0)}% (${gun.lightningChains}) | ✨ x${gun.magicDamageMultiplier.toFixed(2)}<br/>`,
+      `⚛ Энергия: x${gun.energyMultiplier.toFixed(2)}<br/>`,
       `🔗 ${buffedLinks}/${MAX_LINKS_PER_GUN}<br/>`,
       `Апгрейды: ${gunUpgradesText(gun)}`,
       `</div>`,
@@ -687,7 +854,7 @@ function maybeOfferQueuedRewards() {
 
 function offerRegularCards() {
   const pool = buildRegularCardPool();
-  const offer = randomPick(pool, 3);
+  const offer = randomPick(pool, REGULAR_CARD_CHOICES);
   if (offer.length === 0) {
     state.pendingRegularCardRewards = Math.max(0, state.pendingRegularCardRewards - 1);
     return;
@@ -749,7 +916,11 @@ function spawnEnemy() {
 
   let durabilityScale = 1;
   if (state.isBossWave) {
-    durabilityScale = 1.25 + Math.random() * 0.45;
+    if (state.wave === 5) {
+      durabilityScale = 1.05 + Math.random() * 0.3;
+    } else {
+      durabilityScale = 1.25 + Math.random() * 0.45;
+    }
   } else {
     durabilityScale = 0.8 + Math.random() * 0.9;
   }
@@ -774,21 +945,57 @@ function enemyWallDamage(enemy) {
 
 function enemyInGunZone(gun, enemy) {
   const dx = enemy.x - gun.x;
-  const dy = Math.abs(enemy.y - gun.y);
+  const dy = enemy.y - gun.y;
   if (dx < 0) return false;
 
   if (gun.attackMode === "sniper") {
-    return dx <= gun.range && dy <= gun.verticalBand / 2;
+    const maxDx = Math.max(1, world.width - gun.x);
+    if (dx > maxDx) return false;
+    const t = dx / maxDx;
+    const halfWidth = 8 + (gun.verticalBand / 2) * t;
+    return Math.abs(dy) <= halfWidth;
   }
   if (gun.attackMode === "shotgun") {
-    return dx <= gun.range && dy <= gun.verticalBand / 2;
+    return dx <= gun.range && Math.abs(dy) <= gun.verticalBand / 2;
   }
-  return Math.hypot(dx, enemy.y - gun.y) <= gun.range;
+  return Math.hypot(dx, dy) <= gun.range;
+}
+
+function pushParticle(x, y, options = {}) {
+  world.particles.push({
+    x,
+    y,
+    life: options.life ?? 0.25,
+    size: options.size ?? 2.2,
+    color: options.color ?? "#ffc982",
+    vx: options.vx ?? (Math.random() - 0.5) * 22,
+    vy: options.vy ?? -16 - Math.random() * 18,
+  });
+}
+
+function spawnExplosion(x, y, kind = "death", scale = 1) {
+  world.explosions.push({
+    x,
+    y,
+    life: 0.48,
+    maxLife: 0.48,
+    radius: 12 * scale,
+    kind,
+  });
 }
 
 function applyMagicDamage(enemy, amount) {
   enemy.hp -= amount;
-  world.particles.push({ x: enemy.x, y: enemy.y, life: 0.22, size: 2 + Math.random() * 2.1 });
+  enemy.lastHitKind = "magic";
+  for (let i = 0; i < 3; i += 1) {
+    pushParticle(enemy.x, enemy.y, {
+      life: 0.24,
+      size: 2 + Math.random() * 2.2,
+      color: "#c8eaff",
+      vx: (Math.random() - 0.5) * 34,
+      vy: -10 - Math.random() * 22,
+    });
+  }
 }
 
 function createOilPuddle(x, y, magicScale) {
@@ -804,22 +1011,23 @@ function createOilPuddle(x, y, magicScale) {
   });
 }
 
-function triggerLightning(gun, startEnemy) {
-  if (gun.lightningChance <= 0 || gun.lightningChains <= 0 || gun.lightningRadius <= 0) return;
-  if (Math.random() >= gun.lightningChance) return;
+function triggerLightning(startEnemy, combat) {
+  if (combat.lightningChance <= 0 || combat.lightningChains <= 0 || combat.lightningRadius <= 0) return;
+  if (Math.random() >= combat.lightningChance) return;
 
-  const magicMult = gun.magicDamageMultiplier;
+  const magicMult = combat.magicScale;
   let current = startEnemy;
   const visited = new Set([startEnemy]);
   applyMagicDamage(startEnemy, 8 * magicMult);
+  startEnemy.lastHitKind = "magic";
 
-  for (let jump = 0; jump < gun.lightningChains; jump += 1) {
+  for (let jump = 0; jump < combat.lightningChains; jump += 1) {
     let next = null;
     let bestDist = Infinity;
     for (const enemy of world.enemies) {
       if (!enemy.alive() || visited.has(enemy)) continue;
       const dist = Math.hypot(enemy.x - current.x, enemy.y - current.y);
-      if (dist <= gun.lightningRadius && dist < bestDist) {
+      if (dist <= combat.lightningRadius && dist < bestDist) {
         bestDist = dist;
         next = enemy;
       }
@@ -827,6 +1035,7 @@ function triggerLightning(gun, startEnemy) {
     if (!next) break;
     visited.add(next);
     applyMagicDamage(next, (7 - jump * 1.2) * magicMult);
+    next.lastHitKind = "magic";
     world.beams.push({
       x1: current.x,
       y1: current.y,
@@ -836,17 +1045,27 @@ function triggerLightning(gun, startEnemy) {
       life: 0.12,
       color: "rgba(195,238,255,0.95)",
     });
+    pushParticle(next.x, next.y, { color: "#d8f3ff", size: 2.9, life: 0.2 });
     current = next;
   }
 }
 
-function applyHit(gun, enemy, damage, burnChance) {
+function applyHit(enemy, damage, combat) {
+  enemy.lastHitKind = "physical";
   enemy.hp -= damage;
-  if (Math.random() < burnChance) enemy.applyBurn(gun.magicDamageMultiplier);
-  if (Math.random() < gun.iceChance) enemy.applyFreeze(gun.magicDamageMultiplier);
-  if (Math.random() < gun.oilChance) createOilPuddle(enemy.x, enemy.y, gun.magicDamageMultiplier);
-  triggerLightning(gun, enemy);
-  world.particles.push({ x: enemy.x, y: enemy.y, life: 0.25, size: 2 + Math.random() * 2.5 });
+  if (Math.random() < combat.burnChance) {
+    const burnState = enemy.applyBurn(combat.magicScale);
+    enemy.lastHitKind = "magic";
+    pushParticle(enemy.x, enemy.y, { color: burnState === "thaw" ? "#ffd39b" : "#ff9966", size: 2.7 });
+  }
+  if (Math.random() < combat.iceChance) {
+    const freezeState = enemy.applyFreeze(combat.magicScale);
+    enemy.lastHitKind = "magic";
+    pushParticle(enemy.x, enemy.y, { color: freezeState === "extinguish" ? "#cfe9ff" : "#8fd0ff", size: 2.7 });
+  }
+  if (Math.random() < combat.oilChance) createOilPuddle(enemy.x, enemy.y, combat.magicScale);
+  triggerLightning(enemy, combat);
+  pushParticle(enemy.x, enemy.y, { color: "#ffc982", size: 2 + Math.random() * 2.5 });
 }
 
 function pickGunTarget(gun) {
@@ -863,7 +1082,7 @@ function pickGunTarget(gun) {
   return target;
 }
 
-function fireShotgun(gun, baseDamage, burnChance) {
+function fireShotgun(gun, baseDamage, combat) {
   const pellets = gun.shotgunPellets || 5;
   const spread = gun.shotgunSpread || 120;
   for (let i = 0; i < pellets; i += 1) {
@@ -884,7 +1103,7 @@ function fireShotgun(gun, baseDamage, burnChance) {
     }
 
     if (hit) {
-      applyHit(gun, hit, baseDamage * 0.42, burnChance);
+      applyHit(hit, baseDamage * 0.42, combat);
       world.beams.push({
         x1: gun.x,
         y1: gun.y,
@@ -919,18 +1138,29 @@ function handleShooting(dt) {
     const packet = packets[idx];
     const crit = Math.random() < packet.critChance;
     const critMultiplier = crit ? packet.critMultiplier : 1;
+    const energyScale = gun.energyMultiplier * packet.energyMultiplier;
+    const magicScale = gun.magicDamageMultiplier * energyScale;
     const damage =
       (gun.baseDamage + packet.energy + gun.flatDamage) *
       gun.multiplier *
-      critMultiplier;
-    const totalBurn = gun.burnChance + packet.burnChance;
+      critMultiplier *
+      energyScale;
+    const combat = {
+      burnChance: Math.max(0, Math.min(0.95, gun.burnChance + packet.burnChance)),
+      iceChance: Math.max(0, Math.min(0.95, gun.iceChance + packet.iceChance)),
+      oilChance: Math.max(0, Math.min(0.95, gun.oilChance)),
+      lightningChance: Math.max(0, Math.min(0.95, gun.lightningChance + packet.lightningChance)),
+      lightningChains: Math.max(0, Math.round(gun.lightningChains + packet.lightningChains)),
+      lightningRadius: Math.max(0, gun.lightningRadius + packet.lightningRadius),
+      magicScale,
+    };
 
     if (gun.attackMode === "shotgun") {
-      fireShotgun(gun, damage, totalBurn);
+      fireShotgun(gun, damage, combat);
       return;
     }
 
-    applyHit(gun, target, damage, totalBurn);
+    applyHit(target, damage, combat);
     world.beams.push({
       x1: gun.x,
       y1: gun.y,
@@ -960,6 +1190,8 @@ function updateEnemies(dt) {
     if (enemy.reachedWall && enemy.hp > 0) {
       const wallDmg = enemyWallDamage(enemy);
       state.wallHp -= wallDmg;
+      enemy.lastHitKind = "wall";
+      spawnExplosion(enemy.x, enemy.y, "wall", enemy.isBoss ? 1.5 : 1);
       enemy.hp = -1;
       logLine(`${enemy.isBoss ? "Босс" : "Монстр"} ударил стену: -${wallDmg.toFixed(1)} HP.`);
       if (state.wallHp <= 0) state.gameOver = true;
@@ -972,6 +1204,7 @@ function clearDeadEnemies() {
   let killsNow = 0;
   world.enemies = world.enemies.filter((enemy) => {
     if (enemy.hp <= 0 && !enemy.reachedWall) {
+      spawnExplosion(enemy.x, enemy.y, enemy.lastHitKind === "magic" ? "magic" : "death", enemy.isBoss ? 1.35 : 1);
       killsNow += 1;
       if (enemy.isBoss) deadBosses.push(enemy);
       return false;
@@ -1024,9 +1257,17 @@ function updateVisualEffects(dt) {
 
   world.particles.forEach((p) => {
     p.life -= dt;
-    p.y -= dt * 14;
+    p.x += (p.vx || 0) * dt;
+    p.y += (p.vy || -14) * dt;
+    p.vy = (p.vy || -14) + dt * 28;
   });
   world.particles = world.particles.filter((p) => p.life > 0);
+
+  world.explosions.forEach((e) => {
+    e.life -= dt;
+    e.radius += dt * 46;
+  });
+  world.explosions = world.explosions.filter((e) => e.life > 0);
 
   for (const puddle of world.puddles) {
     puddle.life -= dt;
@@ -1039,7 +1280,9 @@ function updateVisualEffects(dt) {
       const inPuddle = Math.hypot(enemy.x - puddle.x, enemy.y - puddle.y) <= puddle.radius + enemy.radius * 0.25;
       if (!inPuddle) continue;
       applyMagicDamage(enemy, 4.4 * puddle.magicScale);
+      enemy.lastHitKind = "magic";
       enemy.applyBurn(puddle.magicScale);
+      pushParticle(enemy.x, enemy.y, { color: "#ffb278", size: 2.4, life: 0.22 });
     }
   }
   world.puddles = world.puddles.filter((p) => p.life > 0);
@@ -1120,8 +1363,16 @@ function drawGuns() {
     ctx.strokeStyle = "rgba(124,180,219,0.22)";
     ctx.lineWidth = 1;
     if (gun.attackMode === "sniper") {
-      const h = gun.verticalBand;
-      ctx.strokeRect(gun.x, gun.y - h / 2, gun.range, h);
+      const xEnd = world.width;
+      const halfEnd = gun.verticalBand / 2;
+      const minHalf = 8;
+      ctx.beginPath();
+      ctx.moveTo(gun.x, gun.y - minHalf);
+      ctx.lineTo(xEnd, gun.y - halfEnd);
+      ctx.lineTo(xEnd, gun.y + halfEnd);
+      ctx.lineTo(gun.x, gun.y + minHalf);
+      ctx.closePath();
+      ctx.stroke();
     } else if (gun.attackMode === "shotgun") {
       const h = gun.verticalBand;
       ctx.strokeRect(gun.x, gun.y - h / 2, gun.range, h);
@@ -1154,7 +1405,17 @@ function drawGuns() {
       ctx.beginPath();
       ctx.arc(linkX, gun.y, 5.6, 0, Math.PI * 2);
       ctx.fill();
+      if (link?.isBuffed()) {
+        const icon = linkBuffIcon(link);
+        ctx.fillStyle = "#eaf6ff";
+        ctx.font = "700 7px Space Grotesk";
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        ctx.fillText(icon, linkX, gun.y + 0.5);
+      }
     }
+    ctx.textAlign = "left";
+    ctx.textBaseline = "alphabetic";
   });
 }
 
@@ -1228,12 +1489,35 @@ function drawBeamsAndParticles() {
 
   world.particles.forEach((p) => {
     ctx.globalAlpha = Math.max(0, p.life / 0.25);
-    ctx.fillStyle = "#ffc982";
+    ctx.fillStyle = p.color || "#ffc982";
     ctx.beginPath();
     ctx.arc(p.x, p.y, p.size, 0, Math.PI * 2);
     ctx.fill();
     ctx.globalAlpha = 1;
   });
+}
+
+function drawExplosions() {
+  for (const e of world.explosions) {
+    const t = e.life / e.maxLife;
+    const color =
+      e.kind === "wall"
+        ? "255,168,116"
+        : e.kind === "magic"
+          ? "189,214,255"
+          : "255,206,140";
+    ctx.globalAlpha = Math.max(0, t);
+    ctx.fillStyle = `rgba(${color},0.22)`;
+    ctx.beginPath();
+    ctx.arc(e.x, e.y, e.radius, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.strokeStyle = `rgba(${color},0.65)`;
+    ctx.lineWidth = 1.8;
+    ctx.beginPath();
+    ctx.arc(e.x, e.y, e.radius * 0.74, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.globalAlpha = 1;
+  }
 }
 
 function drawGameOver() {
@@ -1251,14 +1535,22 @@ function render(now) {
   drawEngineAndLens(now);
   drawWall();
   drawBeamsAndParticles();
+  drawExplosions();
   drawPuddles();
   drawEnemies();
   drawGuns();
   drawGameOver();
 }
 
+function setupCanvasForDpr() {
+  currentDpr = Math.max(1, Math.min(3, window.devicePixelRatio || 1));
+  canvas.width = Math.round(LOGICAL_WIDTH * currentDpr);
+  canvas.height = Math.round(LOGICAL_HEIGHT * currentDpr);
+  ctx.setTransform(currentDpr, 0, 0, currentDpr, 0, 0);
+}
+
 function update(dt) {
-  if (state.pausedByCards || state.gameOver) return;
+  if (state.pausedByCards || state.userPaused || state.gameOver) return;
   handleShooting(dt);
   updateEnemies(dt);
   clearDeadEnemies();
@@ -1277,8 +1569,8 @@ function frame(now) {
 
 function canvasToWorld(event) {
   const rect = canvas.getBoundingClientRect();
-  const sx = canvas.width / rect.width;
-  const sy = canvas.height / rect.height;
+  const sx = LOGICAL_WIDTH / rect.width;
+  const sy = LOGICAL_HEIGHT / rect.height;
   return {
     x: (event.clientX - rect.left) * sx,
     y: (event.clientY - rect.top) * sy,
@@ -1349,6 +1641,8 @@ function onCanvasTouchEnd(event) {
 }
 
 function init() {
+  setupCanvasForDpr();
+  window.addEventListener("resize", setupCanvasForDpr);
   canvas.addEventListener("mousedown", onCanvasMouseDown);
   canvas.addEventListener("mousemove", onCanvasMouseMove);
   canvas.addEventListener("mouseup", onCanvasMouseUp);
@@ -1362,6 +1656,20 @@ function init() {
   ui.restartBtn.addEventListener("click", () => {
     window.location.reload();
   });
+  if (ui.cardsInfoBtn) ui.cardsInfoBtn.addEventListener("click", openCardsInfoModal);
+  if (ui.cardsInfoCloseBtn) ui.cardsInfoCloseBtn.addEventListener("click", closeCardsInfoModal);
+  if (ui.cardsInfoModal) {
+    ui.cardsInfoModal.addEventListener("click", (event) => {
+      if (event.target === ui.cardsInfoModal) closeCardsInfoModal();
+    });
+  }
+  if (ui.pauseBtn) {
+    ui.pauseBtn.addEventListener("click", () => {
+      if (state.gameOver) return;
+      state.userPaused = !state.userPaused;
+      updateHud();
+    });
+  }
   beginWave(1);
   logLine("Старт TD: монстры двигаются справа налево к стене.");
   requestAnimationFrame((t) => {

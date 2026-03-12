@@ -72,9 +72,30 @@ body {
   filter: brightness(1.04);
 }
 
+.meta-btn {
+  border: 1px solid #4e7591;
+  background: rgba(18, 47, 69, 0.9);
+  color: #e7f4ff;
+  border-radius: 10px;
+  padding: 0.55rem 0.85rem;
+  font-family: "Space Grotesk", sans-serif;
+  font-size: 0.9rem;
+  cursor: pointer;
+}
+
+.meta-btn:hover {
+  border-color: #7ec4a6;
+}
+
 .hud {
   display: grid;
   gap: 0.8rem;
+}
+
+.hud-controls {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.55rem;
 }
 
 .hud h1 {
@@ -184,6 +205,50 @@ body {
 .modal-box p {
   margin: 0.45rem 0 0.55rem;
   color: var(--muted);
+}
+
+.info-box {
+  width: min(980px, 100%);
+  height: calc(100vh - 2rem);
+  display: flex;
+  flex-direction: column;
+}
+
+.cards-table-wrap {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  border: 1px solid #3e6685;
+  border-radius: 10px;
+}
+
+.cards-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.84rem;
+}
+
+.cards-table th,
+.cards-table td {
+  border-bottom: 1px solid rgba(105, 147, 177, 0.35);
+  padding: 0.42rem 0.5rem;
+  text-align: left;
+  vertical-align: top;
+}
+
+.cards-table th {
+  position: sticky;
+  top: 0;
+  background: #0f2a40;
+  color: #dff1ff;
+}
+
+.rarity-chip {
+  display: inline-block;
+  border-radius: 999px;
+  padding: 0.1rem 0.45rem;
+  font-size: 0.72rem;
+  border: 1px solid #4f6f89;
 }
 
 .card-list,

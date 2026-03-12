@@ -20,6 +20,11 @@
       </section>
 
       <aside class="hud">
+        <div class="hud-controls">
+          <button id="cardsInfoBtn" class="meta-btn" type="button">Таблица карт</button>
+          <button id="pauseBtn" class="meta-btn" type="button">Пауза</button>
+        </div>
+
         <h1>Lost Games TD</h1>
         <p>Схема поля: движок -> линза -> пушки -> стена -> монстры (справа налево).</p>
 
@@ -49,10 +54,32 @@
 
     <div id="cardModal" class="modal hidden">
       <div class="modal-box">
-        <h3>Выбери 1 из 3 карточек</h3>
+        <h3 id="cardModalTitle">Выбери карточку</h3>
         <p id="cardHint">Игра на паузе, пока карточка не выбрана.</p>
         <div id="cardChoices" class="card-list"></div>
         <div id="targetChoices" class="target-list"></div>
+      </div>
+    </div>
+
+    <div id="cardsInfoModal" class="modal hidden">
+      <div class="modal-box info-box">
+        <h3>Карты и Шансы Выпадения</h3>
+        <p>Шанс указан как базовый (если карта доступна по условиям). Редкости: common 72, rare 22, legendary 6.</p>
+        <div class="cards-table-wrap">
+          <table class="cards-table">
+            <thead>
+              <tr>
+                <th>Карта</th>
+                <th>Тип</th>
+                <th>Редкость</th>
+                <th>Шанс</th>
+                <th>Эффект</th>
+              </tr>
+            </thead>
+            <tbody id="cardsInfoBody"></tbody>
+          </table>
+        </div>
+        <button id="cardsInfoCloseBtn" class="meta-btn" type="button">Закрыть</button>
       </div>
     </div>
 
