@@ -38,12 +38,14 @@ class Lens {
 class Link {
   constructor() {
     this.multiplier = 1;
+    this.burnChancePenalty = 0;
     this.buffName = "Нет";
   }
 
   applyCard(card) {
     if (this.buffName !== "Нет") return false;
     this.multiplier = card.effect.multiplier ?? 1;
+    this.burnChancePenalty = card.effect.burnChancePenalty ?? 0;
     this.buffName = card.name;
     return true;
   }
@@ -88,7 +90,8 @@ class Gun {
 
     monster.hp -= damage;
     const burnRoll = Math.random();
-    const totalBurnChance = this.burnChance + packet.burnChance;
+    const linkBurnPenalty = this.link ? this.link.burnChancePenalty : 0;
+    const totalBurnChance = Math.max(0, this.burnChance + packet.burnChance - linkBurnPenalty);
     if (burnRoll < totalBurnChance) {
       monster.burnStacks += 1;
     }
@@ -159,8 +162,8 @@ const cards = [
     id: "link-x2",
     name: "Резонатор",
     target: "link",
-    effect: { multiplier: 2 },
-    description: "Звено умножает эффект пушки x2",
+    effect: { multiplier: 2, burnChancePenalty: 0.15 },
+    description: "Звено умножает эффект пушки x2, −15% к шансу ожога",
   },
   {
     id: "link-x15",
