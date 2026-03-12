@@ -103,7 +103,12 @@ class Gun {
     return this.links.some((link) => !link.isBuffed());
   }
 
+  hasAttackProfile() {
+    return this.links.some((link) => link.isBuffed() && Boolean(link.effect.attackProfile));
+  }
+
   applyLinkCard(card) {
+    if (card.effect.attackProfile && this.hasAttackProfile()) return false;
     const freeLink = this.links.find((link) => !link.isBuffed());
     if (!freeLink) return false;
     const applied = freeLink.applyCard(card);
@@ -135,15 +140,15 @@ class Gun {
 }
 
 class Enemy {
-  constructor(y, wave, isBoss, startX, wallX) {
+  constructor(y, wave, isBoss, startX, wallX, powerScale) {
     this.x = startX;
     this.y = y;
     this.wallX = wallX;
     this.isBoss = isBoss;
     this.radius = isBoss ? 20 : 12;
-    this.maxHp = isBoss ? 620 + wave * 95 : 55 + wave * 18;
+    this.maxHp = (isBoss ? 620 + wave * 95 : 55 + wave * 18) * powerScale;
     this.hp = this.maxHp;
-    this.speed = isBoss ? 36 + wave : 58 + wave * 2.4;
+    this.speed = (isBoss ? 36 + wave : 58 + wave * 2.4) * Math.min(2.2, 1 + (powerScale - 1) * 0.45);
     this.burnStacks = 0;
     this.burnTimer = 0;
     this.reachedWall = false;
@@ -167,7 +172,6 @@ class Enemy {
   }
 }
 
-const CARD_EVERY_KILLS = 5;
 const BOSS_EVERY_WAVES = 5;
 const MAX_LINKS_PER_GUN = 5;
 const SPAWN_INTERVAL = 0.65;
@@ -325,6 +329,10 @@ const state = {
   draggingGunIndex: -1,
   pausedByCards: false,
   gameOver: false,
+  pendingRegularCardRewards: 0,
+  pendingBossLensRewards: 0,
+  waveRewardGranted: false,
+  enemyPowerScale: 1,
   lastTime: performance.now(),
 };
 
@@ -352,15 +360,28 @@ function randomPick(pool, count) {
 function buildRegularCardPool() {
   const hasFreeLink = world.guns.some((g) => g.hasFreeLink());
   if (!hasFreeLink) return [];
-  return LINK_CARDS;
+  return LINK_CARDS.filter((card) => {
+    if (!card.effect.attackProfile) return true;
+    return world.guns.some((gun) => gun.hasFreeLink() && !gun.hasAttackProfile());
+  });
+}
+
+function zoneName(gun) {
+  if (gun.attackMode === "sniper") return "Снайпер";
+  if (gun.attackMode === "shotgun") return "Дробовик";
+  return "Круг";
+}
+
+function gunUpgradesText(gun) {
+  const upgrades = gun.links.filter((link) => link.isBuffed()).map((link) => link.buffName);
+  return upgrades.length > 0 ? upgrades.join(", ") : "Нет апгрейдов";
 }
 
 function updateHud() {
   ui.wave.textContent = String(state.wave);
   ui.kills.textContent = String(state.kills);
   ui.baseHp.textContent = String(state.wallHp);
-  const next = CARD_EVERY_KILLS - (state.kills % CARD_EVERY_KILLS || CARD_EVERY_KILLS);
-  ui.nextCard.textContent = String(next === 0 ? CARD_EVERY_KILLS : next);
+  ui.nextCard.textContent = state.pendingRegularCardRewards > 0 ? "0" : "1";
 
   ui.lensBuffs.innerHTML = "";
   if (state.lens.buffNames.length === 0) {
@@ -383,22 +404,17 @@ function updateHud() {
     const gun = world.guns[state.selectedGunIndex];
     const buffedLinks = gun.links.filter((link) => link.isBuffed()).length;
     const totalLinks = gun.links.length;
-    const zoneName =
-      gun.attackMode === "sniper"
-        ? "Снайпер (горизонтальный луч)"
-        : gun.attackMode === "shotgun"
-          ? "Дробовик (вертикальная дробь)"
-          : "Круговая";
+    const zone = zoneName(gun);
     ui.selectedGunInfo.innerHTML = [
       `<div><strong>${gun.name}</strong></div>`,
       `<div>Урон: ${gun.baseDamage}+${gun.flatDamage}</div>`,
       `<div>Множитель: x${gun.multiplier.toFixed(2)}</div>`,
       `<div>Скорость атаки: ${gun.fireRate.toFixed(2)}/с</div>`,
       `<div>Дальность: ${gun.range.toFixed(0)}</div>`,
-      `<div>Зона атаки: ${zoneName}</div>`,
+      `<div>Зона атаки: ${zone}</div>`,
       `<div>Ожог: ${(gun.burnChance * 100).toFixed(0)}%</div>`,
       `<div>Звенья: ${buffedLinks}/${totalLinks} (макс ${MAX_LINKS_PER_GUN})</div>`,
-      `<div>Суммарный урон-множитель: x${gun.multiplier.toFixed(2)}</div>`,
+      `<div>Апгрейды: ${gunUpgradesText(gun)}</div>`,
     ].join("");
   }
 }
@@ -409,13 +425,23 @@ function openCardModal(cards, hint, onPick) {
   ui.cardHint.textContent = hint;
   ui.cardChoices.innerHTML = "";
   ui.targetChoices.innerHTML = "";
-  cards.forEach((card) => {
+  cards.forEach((card, idx) => {
     const btn = document.createElement("button");
-    btn.className = "card-btn";
-    btn.textContent = `${card.name} [${card.target}] - ${card.description}`;
+    btn.className = "card-btn game-card";
+    btn.style.setProperty("--card-accent", card.color || "#7dd6ff");
+    btn.style.setProperty("--i", String(idx));
+    btn.style.setProperty("--count", String(cards.length));
+    btn.innerHTML = [
+      `<div class="game-card-top">`,
+      `<span class="game-card-type">${card.target.toUpperCase()}</span>`,
+      `<strong class="game-card-title">${card.name}</strong>`,
+      `</div>`,
+      `<div class="game-card-body">${card.description}</div>`,
+    ].join("");
     btn.onclick = () => onPick(card);
     ui.cardChoices.append(btn);
   });
+  animateFan(ui.cardChoices);
 }
 
 function closeCardModal() {
@@ -424,31 +450,87 @@ function closeCardModal() {
   ui.cardChoices.innerHTML = "";
   ui.targetChoices.innerHTML = "";
   updateHud();
+  maybeOfferQueuedRewards();
 }
 
 function showTargetPick(title, guns, onPick) {
   ui.cardHint.textContent = title;
   ui.targetChoices.innerHTML = "";
-  guns.forEach((gun) => {
+  guns.forEach((gun, idx) => {
+    const buffedLinks = gun.links.filter((link) => link.isBuffed()).length;
     const btn = document.createElement("button");
-    btn.className = "target-btn";
-    btn.textContent = gun.name;
+    btn.className = "target-btn game-card gun-card-choice";
+    btn.style.setProperty("--card-accent", "#7cf1c5");
+    btn.style.setProperty("--i", String(idx));
+    btn.style.setProperty("--count", String(guns.length));
+    btn.innerHTML = [
+      `<div class="game-card-top">`,
+      `<span class="game-card-type">ПУШКА</span>`,
+      `<strong class="game-card-title">${gun.name}</strong>`,
+      `</div>`,
+      `<div class="game-card-body">`,
+      `Урон: ${gun.baseDamage}+${gun.flatDamage}<br/>`,
+      `x${gun.multiplier.toFixed(2)} | ${gun.fireRate.toFixed(2)}/с<br/>`,
+      `${zoneName(gun)} | R${gun.range.toFixed(0)}<br/>`,
+      `Звенья: ${buffedLinks}/${MAX_LINKS_PER_GUN}<br/>`,
+      `Апгрейды: ${gunUpgradesText(gun)}`,
+      `</div>`,
+    ].join("");
     btn.onclick = () => {
       onPick(gun);
       closeCardModal();
     };
     ui.targetChoices.append(btn);
   });
+  animateFan(ui.targetChoices);
+}
+
+function animateFan(container) {
+  container.classList.remove("fan-open");
+  requestAnimationFrame(() => {
+    requestAnimationFrame(() => {
+      container.classList.add("fan-open");
+    });
+  });
+}
+
+function maybeOfferQueuedRewards() {
+  if (state.pausedByCards) return;
+  if (state.pendingBossLensRewards > 0) {
+    offerBossLensCard();
+    return;
+  }
+  if (state.pendingRegularCardRewards > 0) {
+    offerRegularCards();
+  }
 }
 
 function offerRegularCards() {
   const pool = buildRegularCardPool();
   const offer = randomPick(pool, 3);
-  if (offer.length === 0) return;
+  if (offer.length === 0) {
+    state.pendingRegularCardRewards = Math.max(0, state.pendingRegularCardRewards - 1);
+    return;
+  }
   openCardModal(offer, "Обычная награда: выбери 1 карточку.", (card) => {
-    const targets = world.guns.filter((g) => g.hasFreeLink());
+    const targets = world.guns.filter((g) => {
+      if (!g.hasFreeLink()) return false;
+      if (card.effect.attackProfile) return !g.hasAttackProfile();
+      return true;
+    });
+    if (targets.length === 0) {
+      state.pendingRegularCardRewards = Math.max(0, state.pendingRegularCardRewards - 1);
+      logLine(`"${card.name}" пропущена: нет валидной цели.`);
+      closeCardModal();
+      return;
+    }
     showTargetPick(`"${card.name}": выбери звено`, targets, (gun) => {
-      gun.applyLinkCard(card);
+      const applied = gun.applyLinkCard(card);
+      if (!applied) {
+        logLine(`"${card.name}" не применена к ${gun.name}.`);
+        return;
+      }
+      state.pendingRegularCardRewards = Math.max(0, state.pendingRegularCardRewards - 1);
       logLine(`"${card.name}" применена к звену ${gun.name} (${gun.links.filter((l) => l.isBuffed()).length}/${MAX_LINKS_PER_GUN}).`);
       if (allLinksBuffed()) logLine("Все звенья забафаны. Максимальная синергия достигнута.");
     });
@@ -462,6 +544,7 @@ function offerBossLensCard() {
     "Редкая награда за босса: улучшение ЛИНЗЫ (супер редкое). Выбери 1.",
     (card) => {
       card.applyLens(state.lens);
+      state.pendingBossLensRewards = Math.max(0, state.pendingBossLensRewards - 1);
       logLine(`Босс-перк "${card.name}" применен к линзе.`);
       closeCardModal();
     }
@@ -472,6 +555,7 @@ function beginWave(wave) {
   state.isBossWave = wave % BOSS_EVERY_WAVES === 0;
   state.waveQueue = state.isBossWave ? 1 : WAVE_SIZE(wave);
   state.spawnTimer = 0;
+  state.waveRewardGranted = false;
   if (state.isBossWave) {
     logLine(`Волна ${wave}: БОСС.`);
   } else {
@@ -482,7 +566,14 @@ function beginWave(wave) {
 function spawnEnemy() {
   const y =
     world.monsterYMin + Math.random() * (world.monsterYMax - world.monsterYMin);
-  const enemy = new Enemy(y, state.wave, state.isBossWave, world.monsterStartX, world.wall.x);
+  const enemy = new Enemy(
+    y,
+    state.wave,
+    state.isBossWave,
+    world.monsterStartX,
+    world.wall.x,
+    state.enemyPowerScale
+  );
   world.enemies.push(enemy);
 }
 
@@ -604,7 +695,7 @@ function updateEnemies(dt) {
     enemy.update(dt);
     enemy.tickBurn(dt);
     if (enemy.reachedWall && enemy.hp > 0) {
-      const wallDmg = enemy.isBoss ? 5 : 1;
+      const wallDmg = Math.max(1, Math.ceil((enemy.isBoss ? 5 : 1) * state.enemyPowerScale));
       state.wallHp -= wallDmg;
       enemy.hp = -1;
       logLine(`${enemy.isBoss ? "Босс" : "Монстр"} ударил стену: -${wallDmg} HP.`);
@@ -627,11 +718,13 @@ function clearDeadEnemies() {
 
   if (killsNow === 0) return;
   state.kills += killsNow;
-  if (state.kills % CARD_EVERY_KILLS === 0) offerRegularCards();
   if (deadBosses.length > 0) {
+    state.enemyPowerScale *= 1.2;
+    state.pendingBossLensRewards += deadBosses.length;
     logLine("Босс уничтожен. Выдано редкое улучшение линзы.");
-    offerBossLensCard();
+    logLine(`Сила монстров выросла на 20% (x${state.enemyPowerScale.toFixed(2)}).`);
   }
+  maybeOfferQueuedRewards();
 }
 
 function updateWave(dt) {
@@ -646,6 +739,13 @@ function updateWave(dt) {
   }
 
   if (world.enemies.length > 0) return;
+  if (!state.waveRewardGranted) {
+    state.pendingRegularCardRewards += 1;
+    state.waveRewardGranted = true;
+    logLine("Волна завершена. Выдана карточка усиления.");
+    maybeOfferQueuedRewards();
+  }
+  if (state.pausedByCards) return;
   state.nextWaveDelay -= dt;
   if (state.nextWaveDelay > 0) return;
   state.wave += 1;
