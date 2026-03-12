@@ -214,9 +214,9 @@ const LINK_CARDS = [
     id: "gun_aspd_2",
     target: "link",
     name: "Турбо-автоматика",
-    description: "+45% к скорости атаки (в звено)",
+    description: "+45% к скорости атаки, −25% урона (в звено)",
     color: "#4bc7ff",
-    effect: { fireRateMultiplier: 1.45 },
+    effect: { fireRateMultiplier: 1.45, damageMultiplier: 0.75 },
   },
   {
     id: "gun_sniper",
@@ -238,9 +238,9 @@ const LINK_CARDS = [
     id: "link_x2",
     target: "link",
     name: "Резонатор",
-    description: "x2 усиление в звене",
+    description: "x2 усиление в звене, −25% к скорости атаки",
     color: "#7dff9d",
-    effect: { multiplier: 2 },
+    effect: { multiplier: 2, fireRateMultiplier: 0.75 },
   },
   {
     id: "link_x15",
