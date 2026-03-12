@@ -180,10 +180,12 @@ class Gun {
 }
 
 class Enemy {
-  constructor(y, wave, isBoss, startX, wallX, powerScale, durabilityScale) {
+  constructor(y, wave, isBoss, startX, wallCx, wallCy, wallR, powerScale, durabilityScale) {
     this.x = startX;
     this.y = y;
-    this.wallX = wallX;
+    this.wallCx = wallCx;
+    this.wallCy = wallCy;
+    this.wallR = wallR;
     this.isBoss = isBoss;
     const baseRadius = isBoss ? 20 : 12;
     const baseHp = isBoss ? 560 + wave * 80 : 48 + wave * 14;
@@ -210,7 +212,10 @@ class Enemy {
   update(dt) {
     const slowMultiplier = Math.max(0.35, 1 - this.freezeStacks * 0.14);
     this.x -= this.speed * slowMultiplier * dt;
-    if (this.x <= this.wallX + this.radius) this.reachedWall = true;
+    if (this.x >= this.wallCx) {
+      const dist = Math.hypot(this.x - this.wallCx, this.y - this.wallCy);
+      if (dist <= this.wallR + this.radius * 0.78) this.reachedWall = true;
+    }
   }
 
   alive() {
@@ -489,8 +494,8 @@ const ui = {
 const world = {
   width: LOGICAL_WIDTH,
   height: LOGICAL_HEIGHT,
-  enginePos: { x: 90, y: 270 },
-  lensPos: { x: 220, y: 270 },
+  enginePos: { x: 120, y: 270 },
+  lensPos: { x: 215, y: 270 },
   guns: [
     new Gun("Пушка A", 480, 90, 11, MAX_LINKS_PER_GUN),
     new Gun("Пушка B", 480, 175, 12, MAX_LINKS_PER_GUN),
@@ -498,7 +503,17 @@ const world = {
     new Gun("Пушка D", 480, 345, 11, MAX_LINKS_PER_GUN),
     new Gun("Пушка E", 480, 430, 12, MAX_LINKS_PER_GUN),
   ],
-  wall: { x: 472, y: 40, w: 16, h: 460 },
+  wall: {
+    x: 250,
+    y: 40,
+    w: 16,
+    h: 460,
+    cx: 250,
+    cy: 270,
+    r: 230,
+    angleMin: -1.12,
+    angleMax: 1.12,
+  },
   monsterStartX: 940,
   monsterYMin: 74,
   monsterYMax: 466,
@@ -756,6 +771,35 @@ function isGunSelected(idx) {
   return state.selectedGunIndices.includes(idx);
 }
 
+function wallAngleToPos(angle) {
+  const a = Math.max(world.wall.angleMin, Math.min(world.wall.angleMax, angle));
+  return {
+    x: world.wall.cx + Math.cos(a) * world.wall.r,
+    y: world.wall.cy + Math.sin(a) * world.wall.r,
+  };
+}
+
+function pointToWallAngle(x, y) {
+  return Math.atan2(y - world.wall.cy, x - world.wall.cx);
+}
+
+function setGunOnWallByAngle(gun, angle) {
+  const a = Math.max(world.wall.angleMin, Math.min(world.wall.angleMax, angle));
+  const p = wallAngleToPos(a);
+  gun.wallAngle = a;
+  gun.x = p.x;
+  gun.y = p.y;
+}
+
+function placeInitialGunsOnWall() {
+  const count = world.guns.length;
+  world.guns.forEach((gun, idx) => {
+    const t = count === 1 ? 0.5 : idx / (count - 1);
+    const angle = world.wall.angleMin + (world.wall.angleMax - world.wall.angleMin) * t;
+    setGunOnWallByAngle(gun, angle);
+  });
+}
+
 function toggleGunSelection(idx) {
   if (idx < 0 || idx >= world.guns.length) return;
   if (isGunSelected(idx)) {
@@ -1003,7 +1047,9 @@ function spawnEnemy() {
     state.wave,
     state.isBossWave,
     world.monsterStartX,
-    world.wall.x,
+    world.wall.cx,
+    world.wall.cy,
+    world.wall.r,
     state.enemyPowerScale,
     durabilityScale
   );
@@ -1507,14 +1553,23 @@ function drawGuns() {
 function drawWall() {
   const w = world.wall;
   const hpRatio = Math.max(0, Math.min(1, state.wallHp / WALL_HP_MAX));
-  const innerHeight = Math.max(0, w.h * hpRatio - 4);
-  ctx.fillStyle = "#0f2438";
-  ctx.fillRect(w.x, w.y, w.w, w.h);
-  ctx.fillStyle = "#6af4c8";
-  ctx.fillRect(w.x + 2, w.y + w.h * (1 - hpRatio) + 2, w.w - 4, innerHeight);
-  ctx.strokeStyle = "#8fd4ff";
-  ctx.lineWidth = 2;
-  ctx.strokeRect(w.x - 1, w.y - 1, w.w + 2, w.h + 2);
+  ctx.strokeStyle = "rgba(120,230,255,0.26)";
+  ctx.lineWidth = 8;
+  ctx.beginPath();
+  ctx.arc(w.cx, w.cy, w.r, w.angleMin, w.angleMax);
+  ctx.stroke();
+
+  ctx.strokeStyle = hpRatio > 0.35 ? "#78f5d0" : "#ffad8a";
+  ctx.lineWidth = 5;
+  ctx.beginPath();
+  ctx.arc(w.cx, w.cy, w.r, w.angleMin, w.angleMin + (w.angleMax - w.angleMin) * hpRatio);
+  ctx.stroke();
+
+  ctx.strokeStyle = "rgba(173,241,255,0.85)";
+  ctx.lineWidth = 1.5;
+  ctx.beginPath();
+  ctx.arc(w.cx, w.cy, w.r + 10, w.angleMin, w.angleMax);
+  ctx.stroke();
 }
 
 function drawPuddles() {
@@ -1625,9 +1680,17 @@ const threeView = {
   renderer: null,
   engineMesh: null,
   lensMesh: null,
-  wallMesh: null,
+  wallGroup: null,
+  wallCoreMesh: null,
+  wallFrameMesh: null,
+  wallScanRings: [],
+  wallEnergyCore: null,
+  wallBaseZ: -30,
+  wallDomeRadius: 210,
   gunMeshes: [],
   enemyMeshes: new Map(),
+  raycaster: null,
+  pointerNdc: null,
   staticBeamGroup: null,
   dynamicBeamGroup: null,
   engineLensLine: null,
@@ -1728,6 +1791,8 @@ function initThreeView() {
   const THREE = window.THREE;
   const scene = new THREE.Scene();
   scene.background = new THREE.Color(0x020710);
+  threeView.raycaster = new THREE.Raycaster();
+  threeView.pointerNdc = new THREE.Vector2();
 
   const camera = new THREE.PerspectiveCamera(46, 16 / 9, 1, 5000);
 
@@ -1773,11 +1838,78 @@ function initThreeView() {
   );
   scene.add(lens);
 
+  const domeRadius = world.wall.r;
   const wall = new THREE.Mesh(
-    new THREE.BoxGeometry(world.wall.w, world.wall.h, 18),
-    new THREE.MeshStandardMaterial({ color: 0x7df2d0, emissive: 0x255a4a, emissiveIntensity: 0.34 })
+    new THREE.SphereGeometry(domeRadius, 52, 28, 0, Math.PI * 2, 0, Math.PI / 2),
+    new THREE.MeshBasicMaterial({
+      color: 0x79e8ff,
+      transparent: true,
+      opacity: 0.28,
+      side: THREE.DoubleSide,
+      depthWrite: false,
+      blending: THREE.AdditiveBlending,
+    })
   );
-  scene.add(wall);
+  wall.rotation.x = Math.PI / 2;
+
+  const wallFrame = new THREE.Mesh(
+    new THREE.SphereGeometry(domeRadius + 4, 40, 20, 0, Math.PI * 2, 0, Math.PI / 2),
+    new THREE.MeshBasicMaterial({
+      color: 0xb7f6ff,
+      wireframe: true,
+      transparent: true,
+      opacity: 0.12,
+      depthWrite: false,
+    })
+  );
+  wallFrame.rotation.x = Math.PI / 2;
+
+  const wallEnergyCore = new THREE.Mesh(
+    new THREE.SphereGeometry(14, 22, 22),
+    new THREE.MeshBasicMaterial({
+      color: 0x9ff3ff,
+      transparent: true,
+      opacity: 0.94,
+      depthWrite: false,
+    })
+  );
+  wallEnergyCore.position.z = 14;
+
+  const wallGroup = new THREE.Group();
+  wallGroup.add(wallFrame);
+  wallGroup.add(wall);
+  wallGroup.add(wallEnergyCore);
+  scene.add(wallGroup);
+
+  const wallScanRings = [];
+  for (let i = 0; i < 8; i += 1) {
+    const ring = new THREE.Mesh(
+      new THREE.RingGeometry(0.96, 1.04, 56),
+      new THREE.MeshBasicMaterial({
+        color: 0x9befff,
+        transparent: true,
+        opacity: 0.22,
+        side: THREE.DoubleSide,
+        depthWrite: false,
+        blending: THREE.AdditiveBlending,
+      })
+    );
+    wallGroup.add(ring);
+    wallScanRings.push(ring);
+  }
+
+  const baseRing = new THREE.Mesh(
+    new THREE.RingGeometry(domeRadius - 5, domeRadius, 84),
+    new THREE.MeshBasicMaterial({
+      color: 0x8be7ff,
+      transparent: true,
+      opacity: 0.35,
+      side: THREE.DoubleSide,
+      depthWrite: false,
+      blending: THREE.AdditiveBlending,
+    })
+  );
+  wallGroup.add(baseRing);
 
   const staticBeamGroup = new THREE.Group();
   scene.add(staticBeamGroup);
@@ -1817,8 +1949,9 @@ function initThreeView() {
     return rod;
   });
 
-  const gunMeshes = world.guns.map(() => {
+  const gunMeshes = world.guns.map((_, idx) => {
     const group = new THREE.Group();
+    group.userData.gunIndex = idx;
     const base = new THREE.Mesh(
       new THREE.CylinderGeometry(15.5, 18.5, 8, 20),
       new THREE.MeshStandardMaterial({ color: 0x30556f, metalness: 0.35, roughness: 0.36 })
@@ -1854,7 +1987,13 @@ function initThreeView() {
   threeView.renderer = renderer;
   threeView.engineMesh = engine;
   threeView.lensMesh = lens;
-  threeView.wallMesh = wall;
+  threeView.wallGroup = wallGroup;
+  threeView.wallCoreMesh = wall;
+  threeView.wallFrameMesh = wallFrame;
+  threeView.wallScanRings = wallScanRings;
+  threeView.wallEnergyCore = wallEnergyCore;
+  threeView.wallBaseZ = -30;
+  threeView.wallDomeRadius = domeRadius;
   threeView.gunMeshes = gunMeshes;
   threeView.staticBeamGroup = staticBeamGroup;
   threeView.dynamicBeamGroup = dynamicBeamGroup;
@@ -1907,10 +2046,35 @@ function syncThreeWorld(now) {
   }
   if (threeView.engineLensBeam) placeBeamRod(threeView.engineLensBeam, ePos, lPos);
 
-  const wallPos = worldToThree(world.wall.x + world.wall.w / 2, world.wall.y + world.wall.h / 2, 4);
-  threeView.wallMesh.position.copy(wallPos);
-  const wallHpScale = Math.max(0.1, state.wallHp / WALL_HP_MAX);
-  threeView.wallMesh.scale.set(1, wallHpScale, 1);
+  const wallPos = worldToThree(world.wall.cx, world.wall.cy, threeView.wallBaseZ);
+  if (threeView.wallGroup) {
+    threeView.wallGroup.position.copy(wallPos);
+  }
+  const wallHpRatio = Math.max(0, Math.min(1, state.wallHp / WALL_HP_MAX));
+  if (threeView.wallCoreMesh?.material) {
+    const pulse = 0.82 + Math.sin(now * 0.011) * 0.18;
+    threeView.wallCoreMesh.material.opacity = 0.12 + wallHpRatio * 0.24 * pulse;
+    threeView.wallCoreMesh.material.color.setHex(wallHpRatio < 0.35 ? 0xff8f7a : wallHpRatio < 0.65 ? 0x7fe9ff : 0x79e8ff);
+  }
+  if (threeView.wallFrameMesh?.material) {
+    threeView.wallFrameMesh.material.opacity = 0.05 + wallHpRatio * 0.14;
+  }
+  if (threeView.wallEnergyCore?.material) {
+    const corePulse = 0.78 + Math.sin(now * 0.017) * 0.22;
+    threeView.wallEnergyCore.material.opacity = 0.35 + wallHpRatio * 0.55 * corePulse;
+    threeView.wallEnergyCore.material.color.setHex(wallHpRatio < 0.35 ? 0xffb08f : 0x9ff3ff);
+  }
+  const zMin = 10;
+  const zMax = threeView.wallDomeRadius - 8;
+  const travel = zMax - zMin;
+  threeView.wallScanRings.forEach((bar, idx) => {
+    const t = ((now * 0.00032 + idx * 0.12) % 1 + 1) % 1;
+    const z = zMin + t * travel;
+    const ringR = Math.max(10, Math.sqrt(Math.max(0, threeView.wallDomeRadius ** 2 - z ** 2)));
+    bar.position.set(0, 0, z);
+    bar.scale.set(ringR, ringR, 1);
+    if (bar.material) bar.material.opacity = (0.08 + wallHpRatio * 0.22) * (0.7 + Math.sin(now * 0.006 + idx) * 0.3);
+  });
 
   world.guns.forEach((gun, idx) => {
     const mesh = threeView.gunMeshes[idx];
@@ -2092,6 +2256,33 @@ function onThreePointerDown(event) {
   if (!state.threeMode || !threeView.ready) return;
   if (event.button !== 0) return;
   event.preventDefault();
+  const hitIdx = pickGunIndexAtThreeEvent(event);
+  const point = getThreePointerWorldPoint(event);
+  const pointerAngle = point ? pointToWallAngle(point.worldX, point.worldY) : 0;
+
+  if (hitIdx >= 0) {
+    if (event.shiftKey) {
+      toggleGunSelection(hitIdx);
+      updateHud();
+    } else {
+      if (!isGunSelected(hitIdx) || state.selectedGunIndices.length <= 1) {
+        setSelectedGuns([hitIdx], hitIdx);
+      } else {
+        setSelectedGuns(state.selectedGunIndices, hitIdx);
+      }
+      beginGroupDrag(hitIdx, pointerAngle);
+      updateHud();
+    }
+    threeView.orbit.dragging = false;
+    threeView.orbit.pointerId = event.pointerId;
+    ui.threeLayer.setPointerCapture?.(event.pointerId);
+    return;
+  }
+
+  if (!event.shiftKey) {
+    setSelectedGuns([]);
+    updateHud();
+  }
   threeView.orbit.dragging = true;
   threeView.orbit.pointerId = event.pointerId;
   threeView.orbit.lastX = event.clientX;
@@ -2101,8 +2292,15 @@ function onThreePointerDown(event) {
 
 function onThreePointerMove(event) {
   const o = threeView.orbit;
-  if (!state.threeMode || !o.dragging) return;
+  if (!state.threeMode) return;
   if (o.pointerId !== null && event.pointerId !== o.pointerId) return;
+  if (state.draggingGroupIndices.length > 0) {
+    event.preventDefault();
+    const point = getThreePointerWorldPoint(event);
+    if (point) applyGroupDrag(pointToWallAngle(point.worldX, point.worldY));
+    return;
+  }
+  if (!o.dragging) return;
   event.preventDefault();
   const dx = event.clientX - o.lastX;
   const dy = event.clientY - o.lastY;
@@ -2118,6 +2316,7 @@ function onThreePointerUp(event) {
   if (o.pointerId !== null && event.pointerId !== o.pointerId) return;
   o.dragging = false;
   o.pointerId = null;
+  endGroupDrag();
   ui.threeLayer.releasePointerCapture?.(event.pointerId);
 }
 
@@ -2128,6 +2327,49 @@ function onThreeWheel(event) {
   const next = o.radius * (1 + event.deltaY * 0.0012);
   o.radius = Math.max(560, Math.min(1500, next));
   updateThreeCameraFromOrbit();
+}
+
+function getThreePointerNdc(event) {
+  if (!ui.threeLayer || !threeView.pointerNdc) return null;
+  const rect = ui.threeLayer.getBoundingClientRect();
+  const x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
+  const y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
+  threeView.pointerNdc.set(x, y);
+  return threeView.pointerNdc;
+}
+
+function getGunIndexFromThreeObject(obj) {
+  let cur = obj;
+  while (cur) {
+    if (typeof cur.userData?.gunIndex === "number") return cur.userData.gunIndex;
+    cur = cur.parent;
+  }
+  return -1;
+}
+
+function pickGunIndexAtThreeEvent(event) {
+  if (!threeView.ready || !threeView.raycaster) return -1;
+  const ndc = getThreePointerNdc(event);
+  if (!ndc) return -1;
+  threeView.raycaster.setFromCamera(ndc, threeView.camera);
+  const hits = threeView.raycaster.intersectObjects(threeView.gunMeshes, true);
+  if (hits.length === 0) return -1;
+  return getGunIndexFromThreeObject(hits[0].object);
+}
+
+function getThreePointerWorldPoint(event) {
+  if (!threeView.ready || !threeView.raycaster) return null;
+  const ndc = getThreePointerNdc(event);
+  if (!ndc) return null;
+  threeView.raycaster.setFromCamera(ndc, threeView.camera);
+  const plane = new window.THREE.Plane(new window.THREE.Vector3(0, 0, 1), -10);
+  const p = new window.THREE.Vector3();
+  const hit = threeView.raycaster.ray.intersectPlane(plane, p);
+  if (!hit) return null;
+  return {
+    worldX: p.x + world.width / 2,
+    worldY: world.height / 2 - p.y,
+  };
 }
 
 function render(now) {
@@ -2170,14 +2412,21 @@ function frame(now) {
   requestAnimationFrame(frame);
 }
 
-function canvasToWorld(event) {
-  const rect = canvas.getBoundingClientRect();
+function screenToWorld(clientX, clientY, preferThreeLayer = false) {
+  const rect =
+    preferThreeLayer && ui.threeLayer
+      ? ui.threeLayer.getBoundingClientRect()
+      : canvas.getBoundingClientRect();
   const sx = LOGICAL_WIDTH / rect.width;
   const sy = LOGICAL_HEIGHT / rect.height;
   return {
-    x: (event.clientX - rect.left) * sx,
-    y: (event.clientY - rect.top) * sy,
+    x: (clientX - rect.left) * sx,
+    y: (clientY - rect.top) * sy,
   };
+}
+
+function canvasToWorld(event) {
+  return screenToWorld(event.clientX, event.clientY, false);
 }
 
 function pickGunIndexAt(x, y) {
@@ -2188,33 +2437,29 @@ function pickGunIndexAt(x, y) {
   return hit;
 }
 
-function beginGroupDrag(anchorIdx, pointerY) {
+function beginGroupDrag(anchorIdx, pointerAngle) {
   if (anchorIdx < 0 || anchorIdx >= world.guns.length) return;
   const group =
     isGunSelected(anchorIdx) && state.selectedGunIndices.length > 1
       ? [...state.selectedGunIndices]
       : [anchorIdx];
   state.draggingGroupIndices = group;
-  state.draggingGroupBaseYs = group.map((idx) => world.guns[idx].y);
-  state.dragGroupStartY = pointerY;
+  state.draggingGroupBaseYs = group.map((idx) => world.guns[idx].wallAngle ?? pointToWallAngle(world.guns[idx].x, world.guns[idx].y));
+  state.dragGroupStartY = pointerAngle;
 }
 
-function applyGroupDrag(pointerY) {
+function applyGroupDrag(pointerAngle) {
   if (state.draggingGroupIndices.length === 0) return;
-  const minY = world.wall.y + 24;
-  const maxY = world.wall.y + world.wall.h - 24;
   const minBase = Math.min(...state.draggingGroupBaseYs);
   const maxBase = Math.max(...state.draggingGroupBaseYs);
-  const wantedDelta = pointerY - state.dragGroupStartY;
-  const deltaMin = minY - minBase;
-  const deltaMax = maxY - maxBase;
+  const wantedDelta = pointerAngle - state.dragGroupStartY;
+  const deltaMin = world.wall.angleMin - minBase;
+  const deltaMax = world.wall.angleMax - maxBase;
   const appliedDelta = Math.max(deltaMin, Math.min(deltaMax, wantedDelta));
-  const wallCenterX = world.wall.x + world.wall.w / 2;
 
   state.draggingGroupIndices.forEach((idx, i) => {
     const gun = world.guns[idx];
-    gun.x = wallCenterX;
-    gun.y = state.draggingGroupBaseYs[i] + appliedDelta;
+    setGunOnWallByAngle(gun, state.draggingGroupBaseYs[i] + appliedDelta);
   });
 }
 
@@ -2243,14 +2488,14 @@ function onCanvasMouseDown(event) {
   } else {
     setSelectedGuns(state.selectedGunIndices, hitIdx);
   }
-  beginGroupDrag(hitIdx, y);
+  beginGroupDrag(hitIdx, pointToWallAngle(x, y));
   updateHud();
 }
 
 function onCanvasMouseMove(event) {
   if (state.draggingGroupIndices.length === 0) return;
-  const { y } = canvasToWorld(event);
-  applyGroupDrag(y);
+  const { x, y } = canvasToWorld(event);
+  applyGroupDrag(pointToWallAngle(x, y));
 }
 
 function onCanvasMouseUp() {
@@ -2276,15 +2521,15 @@ function onCanvasTouchStart(event) {
   } else {
     setSelectedGuns(state.selectedGunIndices, hitIdx);
   }
-  beginGroupDrag(hitIdx, y);
+  beginGroupDrag(hitIdx, pointToWallAngle(x, y));
   updateHud();
 }
 
 function onCanvasTouchMove(event) {
   event.preventDefault();
   if (state.draggingGroupIndices.length === 0) return;
-  const { y } = canvasToWorld(getTouchPoint(event));
-  applyGroupDrag(y);
+  const { x, y } = canvasToWorld(getTouchPoint(event));
+  applyGroupDrag(pointToWallAngle(x, y));
 }
 
 function onCanvasTouchEnd(event) {
@@ -2293,6 +2538,7 @@ function onCanvasTouchEnd(event) {
 }
 
 function init() {
+  placeInitialGunsOnWall();
   setupCanvasForDpr();
   window.addEventListener("resize", setupCanvasForDpr);
   canvas.addEventListener("mousedown", onCanvasMouseDown);
