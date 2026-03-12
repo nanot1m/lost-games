@@ -20,6 +20,8 @@ body {
   background: radial-gradient(circle at 15% 15%, #1d3f64, transparent 36%),
     radial-gradient(circle at 80% 90%, #225946, transparent 30%),
     linear-gradient(150deg, var(--bg-0), var(--bg-1));
+  -webkit-user-select: none;
+  user-select: none;
 }
 
 .layout {
@@ -46,6 +48,7 @@ body {
   width: 100%;
   height: auto;
   display: block;
+  touch-action: none;
 }
 
 .restart-btn {
@@ -354,5 +357,33 @@ body {
 @media (max-width: 1080px) {
   .layout {
     grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 480px) {
+  .hud h1 {
+    font-size: 1.4rem;
+  }
+
+  .stat strong {
+    font-size: 1rem;
+  }
+
+  .card-list,
+  .target-list {
+    min-height: 200px;
+  }
+
+  .game-card {
+    width: 118px;
+  }
+
+  .log {
+    max-height: 120px;
+  }
+
+  .restart-btn {
+    padding: 0.9rem 1.4rem;
+    font-size: 1.1rem;
   }
 }
