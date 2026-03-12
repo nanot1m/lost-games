@@ -484,7 +484,6 @@ const ui = {
   cardsInfoCloseBtn: document.getElementById("cardsInfoCloseBtn"),
   pauseBtn: document.getElementById("pauseBtn"),
   threeModeBtn: document.getElementById("threeModeBtn"),
-  cameraOrbitBtn: document.getElementById("cameraOrbitBtn"),
 };
 
 const world = {
@@ -521,11 +520,13 @@ const state = {
   nextWaveDelay: 2.3,
   isBossWave: false,
   selectedGunIndex: -1,
-  draggingGunIndex: -1,
+  selectedGunIndices: [],
+  draggingGroupIndices: [],
+  draggingGroupBaseYs: [],
+  dragGroupStartY: 0,
   pausedByCards: false,
   userPaused: false,
   threeMode: false,
-  cameraOrbitEnabled: false,
   gameOver: false,
   pendingRegularCardRewards: 0,
   pendingBossLensRewards: 0,
@@ -741,6 +742,30 @@ function composeCombatStats(gun, packet) {
   };
 }
 
+function setSelectedGuns(indices, primary = -1) {
+  const unique = [...new Set(indices)].filter((idx) => idx >= 0 && idx < world.guns.length);
+  state.selectedGunIndices = unique;
+  if (unique.length === 0) {
+    state.selectedGunIndex = -1;
+    return;
+  }
+  state.selectedGunIndex = unique.includes(primary) ? primary : unique[0];
+}
+
+function isGunSelected(idx) {
+  return state.selectedGunIndices.includes(idx);
+}
+
+function toggleGunSelection(idx) {
+  if (idx < 0 || idx >= world.guns.length) return;
+  if (isGunSelected(idx)) {
+    const next = state.selectedGunIndices.filter((v) => v !== idx);
+    setSelectedGuns(next, next[0] ?? -1);
+    return;
+  }
+  setSelectedGuns([...state.selectedGunIndices, idx], idx);
+}
+
 function updateHud() {
   ui.wave.textContent = String(state.wave);
   ui.kills.textContent = String(state.kills);
@@ -749,10 +774,6 @@ function updateHud() {
   ui.restartBtn.classList.toggle("hidden", !state.gameOver);
   if (ui.pauseBtn) ui.pauseBtn.textContent = state.userPaused ? "Продолжить" : "Пауза";
   if (ui.threeModeBtn) ui.threeModeBtn.textContent = state.threeMode ? "2D режим" : "3D режим";
-  if (ui.cameraOrbitBtn) {
-    ui.cameraOrbitBtn.textContent = state.cameraOrbitEnabled ? "Камера: ON" : "Камера 3D";
-    ui.cameraOrbitBtn.disabled = !state.threeMode;
-  }
 
   ui.lensBuffs.innerHTML = "";
   if (state.lens.buffNames.length === 0) {
@@ -769,8 +790,15 @@ function updateHud() {
     });
   }
 
-  if (state.selectedGunIndex < 0) {
-    ui.selectedGunInfo.textContent = "Кликни по пушке на канвасе. Подписи: A/B/C/D/E.";
+  if (state.selectedGunIndices.length === 0) {
+    ui.selectedGunInfo.textContent = "Кликни по пушке. Shift+клик: мультивыбор. Перетаскивание двигает выбранные башни вместе.";
+  } else if (state.selectedGunIndices.length > 1) {
+    const names = state.selectedGunIndices.map((idx) => world.guns[idx].name).join(", ");
+    ui.selectedGunInfo.innerHTML = [
+      `<div><strong>Выбрано башен: ${state.selectedGunIndices.length}</strong></div>`,
+      `<div>${names}</div>`,
+      `<div>Перетаскивай любую выбранную башню, чтобы двигать группу.</div>`,
+    ].join("");
   } else {
     const gun = world.guns[state.selectedGunIndex];
     const lensPacket = getLensPacketPreview();
@@ -1326,25 +1354,46 @@ function updateVisualEffects(dt) {
 
 function drawBackground() {
   const grad = ctx.createLinearGradient(0, 0, 0, world.height);
-  grad.addColorStop(0, "#0a1d30");
-  grad.addColorStop(1, "#081526");
+  grad.addColorStop(0, "#030914");
+  grad.addColorStop(1, "#02060f");
   ctx.fillStyle = grad;
+  ctx.fillRect(0, 0, world.width, world.height);
+
+  const glow = ctx.createRadialGradient(world.width * 0.5, world.height * 0.5, 20, world.width * 0.5, world.height * 0.5, world.width * 0.7);
+  glow.addColorStop(0, "rgba(50,132,194,0.10)");
+  glow.addColorStop(1, "rgba(0,0,0,0)");
+  ctx.fillStyle = glow;
   ctx.fillRect(0, 0, world.width, world.height);
 }
 
 function drawZones() {
   const zones = [
-    { x: 0, w: 150, color: "rgba(41,123,109,0.12)" },
-    { x: 150, w: 140, color: "rgba(60,111,167,0.12)" },
-    { x: 290, w: 160, color: "rgba(71,96,167,0.14)" },
-    { x: 450, w: 70, color: "rgba(168,75,75,0.12)" },
-    { x: 520, w: 440, color: "rgba(147,92,62,0.12)" },
+    { x: 0, w: 150, color: "rgba(38,132,173,0.08)" },
+    { x: 150, w: 140, color: "rgba(48,94,186,0.08)" },
+    { x: 290, w: 160, color: "rgba(43,82,176,0.09)" },
+    { x: 450, w: 70, color: "rgba(88,66,160,0.09)" },
+    { x: 520, w: 440, color: "rgba(64,64,84,0.07)" },
   ];
 
   zones.forEach((zone) => {
     ctx.fillStyle = zone.color;
     ctx.fillRect(zone.x, 0, zone.w, world.height);
   });
+
+  ctx.strokeStyle = "rgba(86,170,230,0.14)";
+  ctx.lineWidth = 1;
+  for (let x = 0.5; x < world.width; x += 34) {
+    ctx.beginPath();
+    ctx.moveTo(x, 0);
+    ctx.lineTo(x, world.height);
+    ctx.stroke();
+  }
+  for (let y = 0.5; y < world.height; y += 34) {
+    ctx.beginPath();
+    ctx.moveTo(0, y);
+    ctx.lineTo(world.width, y);
+    ctx.stroke();
+  }
 }
 
 function drawEngineAndLens(now) {
@@ -1352,17 +1401,17 @@ function drawEngineAndLens(now) {
   const l = world.lensPos;
   const pulse = 0.5 + Math.sin(now * 0.005) * 0.5;
 
-  ctx.fillStyle = "#69e8bd";
+  ctx.fillStyle = "#5ff2cf";
   ctx.beginPath();
   ctx.arc(e.x, e.y, 18, 0, Math.PI * 2);
   ctx.fill();
 
-  ctx.fillStyle = "#8fd8ff";
+  ctx.fillStyle = "#7fd6ff";
   ctx.beginPath();
   ctx.arc(l.x, l.y, 14, 0, Math.PI * 2);
   ctx.fill();
 
-  ctx.strokeStyle = `rgba(111,241,195,${0.45 + pulse * 0.4})`;
+  ctx.strokeStyle = `rgba(114,244,211,${0.5 + pulse * 0.4})`;
   ctx.lineWidth = 4 + pulse * 2;
   ctx.beginPath();
   ctx.moveTo(e.x, e.y);
@@ -1370,7 +1419,7 @@ function drawEngineAndLens(now) {
   ctx.stroke();
 
   world.guns.forEach((gun) => {
-    ctx.strokeStyle = `rgba(130,212,255,${0.3 + pulse * 0.3})`;
+    ctx.strokeStyle = `rgba(124,220,255,${0.34 + pulse * 0.34})`;
     ctx.lineWidth = 2 + pulse * 1.3;
     ctx.beginPath();
     ctx.moveTo(l.x, l.y);
@@ -1381,22 +1430,22 @@ function drawEngineAndLens(now) {
 
 function drawGuns() {
   world.guns.forEach((gun, idx) => {
-    const selected = idx === state.selectedGunIndex;
+    const selected = isGunSelected(idx);
 
-    ctx.fillStyle = selected ? "#2f6b7c" : "#24495e";
-    ctx.strokeStyle = selected ? "#97f3d3" : "#507390";
+    ctx.fillStyle = selected ? "#2e6e88" : "#1e4362";
+    ctx.strokeStyle = selected ? "#73ffe1" : "#4f9bd2";
     ctx.lineWidth = selected ? 3 : 2;
     ctx.beginPath();
     ctx.arc(gun.x, gun.y, 21, 0, Math.PI * 2);
     ctx.fill();
     ctx.stroke();
 
-    ctx.fillStyle = "#b0dcff";
+    ctx.fillStyle = "#bbebff";
     ctx.beginPath();
     ctx.arc(gun.x, gun.y, 7, 0, Math.PI * 2);
     ctx.fill();
 
-    ctx.strokeStyle = "rgba(124,180,219,0.22)";
+    ctx.strokeStyle = "rgba(88,173,234,0.25)";
     ctx.lineWidth = 1;
     if (gun.attackMode === "sniper") {
       const xEnd = world.width;
@@ -1412,7 +1461,7 @@ function drawGuns() {
     } else if (gun.attackMode === "shotgun") {
       const h = gun.verticalBand;
       ctx.strokeRect(gun.x, gun.y - h / 2, gun.range, h);
-      ctx.strokeStyle = "rgba(124,180,219,0.12)";
+      ctx.strokeStyle = "rgba(88,173,234,0.14)";
       ctx.beginPath();
       ctx.moveTo(gun.x, gun.y - h / 2);
       ctx.lineTo(gun.x + gun.range, gun.y);
@@ -1424,7 +1473,7 @@ function drawGuns() {
       ctx.stroke();
     }
 
-    ctx.fillStyle = "#d8ecff";
+    ctx.fillStyle = "#dcf5ff";
     ctx.font = "700 12px Space Grotesk";
     ctx.fillText(gun.name, gun.x - 28, gun.y - 30);
 
@@ -1432,11 +1481,11 @@ function drawGuns() {
       const linkX = gun.x - 36 - i * 11;
       const link = gun.links[i];
       if (!link) {
-        ctx.fillStyle = "rgba(88,105,121,0.3)";
+        ctx.fillStyle = "rgba(79,99,128,0.28)";
       } else if (link.isBuffed()) {
         ctx.fillStyle = link.color;
       } else {
-        ctx.fillStyle = "#678095";
+        ctx.fillStyle = "#6d90ad";
       }
       ctx.beginPath();
       ctx.arc(linkX, gun.y, 5.6, 0, Math.PI * 2);
@@ -1459,11 +1508,11 @@ function drawWall() {
   const w = world.wall;
   const hpRatio = Math.max(0, Math.min(1, state.wallHp / WALL_HP_MAX));
   const innerHeight = Math.max(0, w.h * hpRatio - 4);
-  ctx.fillStyle = "#243646";
+  ctx.fillStyle = "#0f2438";
   ctx.fillRect(w.x, w.y, w.w, w.h);
-  ctx.fillStyle = "#72e4b2";
+  ctx.fillStyle = "#6af4c8";
   ctx.fillRect(w.x + 2, w.y + w.h * (1 - hpRatio) + 2, w.w - 4, innerHeight);
-  ctx.strokeStyle = "#97b8cd";
+  ctx.strokeStyle = "#8fd4ff";
   ctx.lineWidth = 2;
   ctx.strokeRect(w.x - 1, w.y - 1, w.w + 2, w.h + 2);
 }
@@ -1473,11 +1522,11 @@ function drawPuddles() {
     ctx.beginPath();
     ctx.arc(puddle.x, puddle.y, puddle.radius, 0, Math.PI * 2);
     if (puddle.ignited) {
-      ctx.fillStyle = "rgba(255,129,72,0.28)";
-      ctx.strokeStyle = "rgba(255,193,122,0.55)";
+      ctx.fillStyle = "rgba(255,138,70,0.30)";
+      ctx.strokeStyle = "rgba(255,212,110,0.62)";
     } else {
-      ctx.fillStyle = "rgba(68,74,89,0.32)";
-      ctx.strokeStyle = "rgba(126,136,156,0.45)";
+      ctx.fillStyle = "rgba(34,41,58,0.34)";
+      ctx.strokeStyle = "rgba(110,126,162,0.48)";
     }
     ctx.fill();
     ctx.lineWidth = 1;
@@ -1500,13 +1549,13 @@ function drawEnemies() {
 
     const hpW = enemy.isBoss ? 54 : 28;
     const hpPct = Math.max(0, enemy.hp / enemy.maxHp);
-    ctx.fillStyle = "rgba(34,54,70,0.95)";
+    ctx.fillStyle = "rgba(14,29,46,0.95)";
     ctx.fillRect(enemy.x - hpW / 2, enemy.y - enemy.radius - 10, hpW, 4);
-    ctx.fillStyle = "#85efba";
+    ctx.fillStyle = enemy.freezeStacks > 0 ? "#8bd9ff" : "#7af3c7";
     ctx.fillRect(enemy.x - hpW / 2, enemy.y - enemy.radius - 10, hpW * hpPct, 4);
 
     if (enemy.isBoss) {
-      ctx.fillStyle = "#f0d9ff";
+      ctx.fillStyle = "#f2dfff";
       ctx.font = "700 10px Space Grotesk";
       ctx.fillText("BOSS", enemy.x - 14, enemy.y + 3);
     }
@@ -1515,12 +1564,16 @@ function drawEnemies() {
 
 function drawBeamsAndParticles() {
   world.beams.forEach((beam) => {
-    ctx.strokeStyle = beam.color || (beam.crit ? "rgba(255,220,120,0.92)" : "rgba(128,220,255,0.88)");
-    ctx.lineWidth = beam.crit ? 3.1 : 2.2;
+    const color = beam.color || (beam.crit ? "rgba(255,224,110,0.96)" : "rgba(118,221,255,0.92)");
+    ctx.strokeStyle = color;
+    ctx.lineWidth = beam.crit ? 3.8 : 2.8;
+    ctx.shadowColor = color;
+    ctx.shadowBlur = beam.crit ? 14 : 9;
     ctx.beginPath();
     ctx.moveTo(beam.x1, beam.y1);
     ctx.lineTo(beam.x2, beam.y2);
     ctx.stroke();
+    ctx.shadowBlur = 0;
   });
 
   world.particles.forEach((p) => {
@@ -1581,6 +1634,8 @@ const threeView = {
   lensGunLines: [],
   engineLensBeam: null,
   lensGunBeams: [],
+  zoneGroup: null,
+  enemyInfoGroup: null,
   orbit: {
     azimuth: 0,
     elevation: 0.58,
@@ -1618,6 +1673,29 @@ function placeBeamRod(mesh, p1, p2) {
   mesh.quaternion.setFromUnitVectors(new window.THREE.Vector3(0, 1, 0), dir.normalize());
 }
 
+function clearThreeGroup(group) {
+  if (!group) return;
+  while (group.children.length > 0) {
+    const obj = group.children.pop();
+    group.remove(obj);
+    if (obj.geometry) obj.geometry.dispose();
+    if (obj.material?.dispose) obj.material.dispose();
+  }
+}
+
+function makeThreeLine(points, color, opacity = 0.4, closed = false) {
+  const THREE = window.THREE;
+  const geometry = new THREE.BufferGeometry().setFromPoints(points);
+  const mat = new THREE.LineBasicMaterial({
+    color,
+    transparent: true,
+    opacity,
+    depthWrite: false,
+    depthTest: false,
+  });
+  return closed ? new THREE.LineLoop(geometry, mat) : new THREE.Line(geometry, mat);
+}
+
 function updateThreeCameraFromOrbit() {
   if (!threeView.ready) return;
   const o = threeView.orbit;
@@ -1649,7 +1727,7 @@ function initThreeView() {
   if (threeView.ready || !ui.threeLayer || !window.THREE) return;
   const THREE = window.THREE;
   const scene = new THREE.Scene();
-  scene.background = new THREE.Color(0x071322);
+  scene.background = new THREE.Color(0x020710);
 
   const camera = new THREE.PerspectiveCamera(46, 16 / 9, 1, 5000);
 
@@ -1672,10 +1750,16 @@ function initThreeView() {
   scene.add(rim);
 
   const fieldGeo = new THREE.PlaneGeometry(world.width, world.height);
-  const fieldMat = new THREE.MeshStandardMaterial({ color: 0x0b1f34, metalness: 0.05, roughness: 0.92 });
+  const fieldMat = new THREE.MeshStandardMaterial({ color: 0x04080f, metalness: 0.08, roughness: 0.88 });
   const field = new THREE.Mesh(fieldGeo, fieldMat);
   field.position.z = -30;
   scene.add(field);
+  const tableGrid = new THREE.GridHelper(world.width, 28, 0x2a89c8, 0x174c73);
+  tableGrid.rotation.x = Math.PI / 2;
+  tableGrid.position.z = -29;
+  tableGrid.material.transparent = true;
+  tableGrid.material.opacity = 0.28;
+  scene.add(tableGrid);
 
   const engine = new THREE.Mesh(
     new THREE.SphereGeometry(18, 24, 24),
@@ -1691,7 +1775,7 @@ function initThreeView() {
 
   const wall = new THREE.Mesh(
     new THREE.BoxGeometry(world.wall.w, world.wall.h, 18),
-    new THREE.MeshStandardMaterial({ color: 0x7de6bb, emissive: 0x204d3d, emissiveIntensity: 0.28 })
+    new THREE.MeshStandardMaterial({ color: 0x7df2d0, emissive: 0x255a4a, emissiveIntensity: 0.34 })
   );
   scene.add(wall);
 
@@ -1699,6 +1783,10 @@ function initThreeView() {
   scene.add(staticBeamGroup);
   const dynamicBeamGroup = new THREE.Group();
   scene.add(dynamicBeamGroup);
+  const zoneGroup = new THREE.Group();
+  scene.add(zoneGroup);
+  const enemyInfoGroup = new THREE.Group();
+  scene.add(enemyInfoGroup);
 
   const buildLine = (color, opacity, width = 2.4) =>
     new THREE.Line(
@@ -1774,6 +1862,8 @@ function initThreeView() {
   threeView.lensGunLines = lensGunLines;
   threeView.engineLensBeam = engineLensBeam;
   threeView.lensGunBeams = lensGunBeams;
+  threeView.zoneGroup = zoneGroup;
+  threeView.enemyInfoGroup = enemyInfoGroup;
   threeView.ready = true;
   threeView.orbit.azimuth = -Math.PI / 2;
   threeView.orbit.elevation = 0.58;
@@ -1831,16 +1921,44 @@ function syncThreeWorld(now) {
     if (line) line.geometry.setFromPoints([lPos.clone(), p.clone()]);
     const rod = threeView.lensGunBeams[idx];
     if (rod) placeBeamRod(rod, lPos, p);
-    const pulse = idx === state.selectedGunIndex ? 1.2 : 1;
+    const pulse = isGunSelected(idx) ? 1.2 : 1;
     mesh.scale.set(pulse, pulse, pulse);
     const target = pickGunTarget(gun);
     const targetAngle = target ? -Math.atan2(target.y - gun.y, target.x - gun.x) : 0;
     const currentAngle = mesh.rotation.z || 0;
     mesh.rotation.z = currentAngle + (targetAngle - currentAngle) * 0.22;
     if (mesh.userData.core?.material) {
-      mesh.userData.core.material.emissiveIntensity = idx === state.selectedGunIndex ? 1.35 : 0.9;
+      mesh.userData.core.material.emissiveIntensity = isGunSelected(idx) ? 1.35 : 0.9;
     }
   });
+
+  clearThreeGroup(threeView.zoneGroup);
+  for (const gun of world.guns) {
+    const points = [];
+    if (gun.attackMode === "sniper") {
+      const xEnd = world.width;
+      points.push(worldToThree(gun.x, gun.y - 8, 12));
+      points.push(worldToThree(xEnd, gun.y - gun.verticalBand / 2, 12));
+      points.push(worldToThree(xEnd, gun.y + gun.verticalBand / 2, 12));
+      points.push(worldToThree(gun.x, gun.y + 8, 12));
+      threeView.zoneGroup.add(makeThreeLine(points, 0x77d7ff, 0.36, true));
+    } else if (gun.attackMode === "shotgun") {
+      const x2 = gun.x + gun.range;
+      const h = gun.verticalBand / 2;
+      points.push(worldToThree(gun.x, gun.y - h, 12));
+      points.push(worldToThree(x2, gun.y - h, 12));
+      points.push(worldToThree(x2, gun.y + h, 12));
+      points.push(worldToThree(gun.x, gun.y + h, 12));
+      threeView.zoneGroup.add(makeThreeLine(points, 0x7ecbff, 0.3, true));
+    } else {
+      const steps = 44;
+      for (let i = 0; i < steps; i += 1) {
+        const a = (Math.PI * 2 * i) / steps;
+        points.push(worldToThree(gun.x + Math.cos(a) * gun.range, gun.y + Math.sin(a) * gun.range, 12));
+      }
+      threeView.zoneGroup.add(makeThreeLine(points, 0x6fc2ff, 0.24, true));
+    }
+  }
 
   const seen = new Set();
   for (const enemy of world.enemies) {
@@ -1854,6 +1972,46 @@ function syncThreeWorld(now) {
     mesh.material.color.setHex(color);
     const emissive = enemy.freezeStacks > 0 ? 0x174b79 : enemy.burnStacks > 0 ? 0x5a2a15 : 0x322023;
     mesh.material.emissive.setHex(emissive);
+  }
+
+  clearThreeGroup(threeView.enemyInfoGroup);
+  for (const enemy of world.enemies) {
+    if (!enemy.alive()) continue;
+    const y = enemy.y - enemy.radius - 14;
+    const half = enemy.isBoss ? 27 : 14;
+    const hpPct = Math.max(0, Math.min(1, enemy.hp / enemy.maxHp));
+    const bgL = makeThreeLine(
+      [worldToThree(enemy.x - half, y, 20), worldToThree(enemy.x + half, y, 20)],
+      0x23364a,
+      0.92,
+      false
+    );
+    const fgColor = enemy.freezeStacks > 0 ? 0x8fdfff : enemy.burnStacks > 0 ? 0xffcf86 : 0x7ef5c5;
+    const fgL = makeThreeLine(
+      [worldToThree(enemy.x - half, y, 21), worldToThree(enemy.x - half + half * 2 * hpPct, y, 21)],
+      fgColor,
+      0.98,
+      false
+    );
+    threeView.enemyInfoGroup.add(bgL);
+    threeView.enemyInfoGroup.add(fgL);
+
+    if (enemy.burnStacks > 0 || enemy.freezeStacks > 0) {
+      const statusPoints = [];
+      const ringR = enemy.radius + 5;
+      const ringSteps = 20;
+      for (let i = 0; i < ringSteps; i += 1) {
+        const a = (Math.PI * 2 * i) / ringSteps;
+        statusPoints.push(worldToThree(enemy.x + Math.cos(a) * ringR, enemy.y + Math.sin(a) * ringR, 16));
+      }
+      if (enemy.burnStacks > 0) {
+        threeView.enemyInfoGroup.add(makeThreeLine(statusPoints, 0xffa45e, 0.85, true));
+      }
+      if (enemy.freezeStacks > 0) {
+        const inner = statusPoints.map((p) => p.clone().multiplyScalar(0.998));
+        threeView.enemyInfoGroup.add(makeThreeLine(inner, 0x87d9ff, 0.9, true));
+      }
+    }
   }
 
   for (const [uid, mesh] of threeView.enemyMeshes.entries()) {
@@ -1921,24 +2079,18 @@ function setThreeMode(enabled) {
   state.threeMode = Boolean(enabled);
   if (ui.board) ui.board.classList.toggle("three-active", state.threeMode);
   if (state.threeMode) initThreeView();
-  if (!state.threeMode) state.cameraOrbitEnabled = false;
-  if (ui.threeLayer) ui.threeLayer.style.pointerEvents = state.threeMode && state.cameraOrbitEnabled ? "auto" : "none";
+  if (!state.threeMode) {
+    threeView.orbit.dragging = false;
+    threeView.orbit.pointerId = null;
+  }
+  if (ui.threeLayer) ui.threeLayer.style.pointerEvents = state.threeMode ? "auto" : "none";
   resizeThreeView();
   updateHud();
 }
 
-function setCameraOrbitEnabled(enabled) {
-  state.cameraOrbitEnabled = Boolean(enabled) && state.threeMode;
-  if (ui.threeLayer) ui.threeLayer.style.pointerEvents = state.cameraOrbitEnabled ? "auto" : "none";
-  if (!state.cameraOrbitEnabled) {
-    threeView.orbit.dragging = false;
-    threeView.orbit.pointerId = null;
-  }
-  updateHud();
-}
-
 function onThreePointerDown(event) {
-  if (!state.threeMode || !state.cameraOrbitEnabled || !threeView.ready) return;
+  if (!state.threeMode || !threeView.ready) return;
+  if (event.button !== 0) return;
   event.preventDefault();
   threeView.orbit.dragging = true;
   threeView.orbit.pointerId = event.pointerId;
@@ -1949,7 +2101,7 @@ function onThreePointerDown(event) {
 
 function onThreePointerMove(event) {
   const o = threeView.orbit;
-  if (!state.threeMode || !state.cameraOrbitEnabled || !o.dragging) return;
+  if (!state.threeMode || !o.dragging) return;
   if (o.pointerId !== null && event.pointerId !== o.pointerId) return;
   event.preventDefault();
   const dx = event.clientX - o.lastX;
@@ -1970,7 +2122,7 @@ function onThreePointerUp(event) {
 }
 
 function onThreeWheel(event) {
-  if (!state.threeMode || !state.cameraOrbitEnabled || !threeView.ready) return;
+  if (!state.threeMode || !threeView.ready) return;
   event.preventDefault();
   const o = threeView.orbit;
   const next = o.radius * (1 + event.deltaY * 0.0012);
@@ -2028,38 +2180,81 @@ function canvasToWorld(event) {
   };
 }
 
-function pickGunAt(x, y) {
-  state.selectedGunIndex = -1;
+function pickGunIndexAt(x, y) {
+  let hit = -1;
   world.guns.forEach((gun, idx) => {
-    if (Math.hypot(gun.x - x, gun.y - y) <= 24) state.selectedGunIndex = idx;
+    if (Math.hypot(gun.x - x, gun.y - y) <= 24) hit = idx;
   });
+  return hit;
+}
+
+function beginGroupDrag(anchorIdx, pointerY) {
+  if (anchorIdx < 0 || anchorIdx >= world.guns.length) return;
+  const group =
+    isGunSelected(anchorIdx) && state.selectedGunIndices.length > 1
+      ? [...state.selectedGunIndices]
+      : [anchorIdx];
+  state.draggingGroupIndices = group;
+  state.draggingGroupBaseYs = group.map((idx) => world.guns[idx].y);
+  state.dragGroupStartY = pointerY;
+}
+
+function applyGroupDrag(pointerY) {
+  if (state.draggingGroupIndices.length === 0) return;
+  const minY = world.wall.y + 24;
+  const maxY = world.wall.y + world.wall.h - 24;
+  const minBase = Math.min(...state.draggingGroupBaseYs);
+  const maxBase = Math.max(...state.draggingGroupBaseYs);
+  const wantedDelta = pointerY - state.dragGroupStartY;
+  const deltaMin = minY - minBase;
+  const deltaMax = maxY - maxBase;
+  const appliedDelta = Math.max(deltaMin, Math.min(deltaMax, wantedDelta));
+  const wallCenterX = world.wall.x + world.wall.w / 2;
+
+  state.draggingGroupIndices.forEach((idx, i) => {
+    const gun = world.guns[idx];
+    gun.x = wallCenterX;
+    gun.y = state.draggingGroupBaseYs[i] + appliedDelta;
+  });
+}
+
+function endGroupDrag() {
+  state.draggingGroupIndices = [];
+  state.draggingGroupBaseYs = [];
 }
 
 function onCanvasMouseDown(event) {
   const { x, y } = canvasToWorld(event);
-  pickGunAt(x, y);
-  state.draggingGunIndex = state.selectedGunIndex;
+  const hitIdx = pickGunIndexAt(x, y);
+  if (hitIdx < 0) {
+    if (!event.shiftKey) setSelectedGuns([]);
+    updateHud();
+    return;
+  }
+
+  if (event.shiftKey) {
+    toggleGunSelection(hitIdx);
+    updateHud();
+    return;
+  }
+
+  if (!isGunSelected(hitIdx) || state.selectedGunIndices.length <= 1) {
+    setSelectedGuns([hitIdx], hitIdx);
+  } else {
+    setSelectedGuns(state.selectedGunIndices, hitIdx);
+  }
+  beginGroupDrag(hitIdx, y);
   updateHud();
 }
 
 function onCanvasMouseMove(event) {
-  if (state.draggingGunIndex < 0) return;
+  if (state.draggingGroupIndices.length === 0) return;
   const { y } = canvasToWorld(event);
-  const gun = world.guns[state.draggingGunIndex];
-  const minY = world.wall.y + 24;
-  const maxY = world.wall.y + world.wall.h - 24;
-  gun.x = world.wall.x + world.wall.w / 2;
-  gun.y = Math.max(minY, Math.min(maxY, y));
+  applyGroupDrag(y);
 }
 
 function onCanvasMouseUp() {
-  state.draggingGunIndex = -1;
-}
-
-function onCanvasClick(event) {
-  const { x, y } = canvasToWorld(event);
-  pickGunAt(x, y);
-  updateHud();
+  endGroupDrag();
 }
 
 function getTouchPoint(touchEvent) {
@@ -2070,25 +2265,31 @@ function getTouchPoint(touchEvent) {
 function onCanvasTouchStart(event) {
   event.preventDefault();
   const { x, y } = canvasToWorld(getTouchPoint(event));
-  pickGunAt(x, y);
-  state.draggingGunIndex = state.selectedGunIndex;
+  const hitIdx = pickGunIndexAt(x, y);
+  if (hitIdx < 0) {
+    setSelectedGuns([]);
+    updateHud();
+    return;
+  }
+  if (!isGunSelected(hitIdx) || state.selectedGunIndices.length <= 1) {
+    setSelectedGuns([hitIdx], hitIdx);
+  } else {
+    setSelectedGuns(state.selectedGunIndices, hitIdx);
+  }
+  beginGroupDrag(hitIdx, y);
   updateHud();
 }
 
 function onCanvasTouchMove(event) {
   event.preventDefault();
-  if (state.draggingGunIndex < 0) return;
+  if (state.draggingGroupIndices.length === 0) return;
   const { y } = canvasToWorld(getTouchPoint(event));
-  const gun = world.guns[state.draggingGunIndex];
-  const minY = world.wall.y + 24;
-  const maxY = world.wall.y + world.wall.h - 24;
-  gun.x = world.wall.x + world.wall.w / 2;
-  gun.y = Math.max(minY, Math.min(maxY, y));
+  applyGroupDrag(y);
 }
 
 function onCanvasTouchEnd(event) {
   event.preventDefault();
-  state.draggingGunIndex = -1;
+  endGroupDrag();
 }
 
 function init() {
@@ -2099,7 +2300,6 @@ function init() {
   canvas.addEventListener("mouseup", onCanvasMouseUp);
   canvas.addEventListener("mouseleave", onCanvasMouseUp);
   window.addEventListener("mouseup", onCanvasMouseUp);
-  canvas.addEventListener("click", onCanvasClick);
   canvas.addEventListener("touchstart", onCanvasTouchStart, { passive: false });
   canvas.addEventListener("touchmove", onCanvasTouchMove, { passive: false });
   canvas.addEventListener("touchend", onCanvasTouchEnd, { passive: false });
@@ -2128,12 +2328,6 @@ function init() {
         return;
       }
       setThreeMode(!state.threeMode);
-    });
-  }
-  if (ui.cameraOrbitBtn) {
-    ui.cameraOrbitBtn.addEventListener("click", () => {
-      if (!state.threeMode) return;
-      setCameraOrbitEnabled(!state.cameraOrbitEnabled);
     });
   }
   if (ui.threeLayer) {
