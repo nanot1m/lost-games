@@ -70,6 +70,12 @@ class Gun {
     this.flatDamage = 0;
     this.multiplier = 1;
     this.burnChance = 0;
+    this.iceChance = 0;
+    this.oilChance = 0;
+    this.lightningChance = 0;
+    this.lightningChains = 0;
+    this.lightningRadius = 0;
+    this.magicDamageMultiplier = 1;
     this.links = Array.from({ length: linkSlots }, () => new Link());
   }
 
@@ -120,6 +126,12 @@ class Gun {
     this.flatDamage = 0;
     this.multiplier = 1;
     this.burnChance = 0;
+    this.iceChance = 0;
+    this.oilChance = 0;
+    this.lightningChance = 0;
+    this.lightningChains = 0;
+    this.lightningRadius = 0;
+    this.magicDamageMultiplier = 1;
     this.range = 130;
     this.setAttackProfile("circular");
     let fireRateMultiplier = 1;
@@ -131,31 +143,57 @@ class Gun {
       this.multiplier *= effect.damageMultiplier || 1;
       this.multiplier *= effect.multiplier || 1;
       this.burnChance += effect.burnChance || 0;
+      this.iceChance += effect.iceChance || 0;
+      this.oilChance += effect.oilChance || 0;
+      this.lightningChance += effect.lightningChance || 0;
+      this.lightningChains += effect.lightningChains || 0;
+      this.lightningRadius += effect.lightningRadius || 0;
+      this.magicDamageMultiplier *= effect.magicDamageMultiplier || 1;
       this.range += effect.rangeBonus || 0;
       if (effect.attackProfile) this.setAttackProfile(effect.attackProfile);
       fireRateMultiplier *= effect.fireRateMultiplier || 1;
     }
-    this.fireRate = this.baseFireRate * fireRateMultiplier;
+    this.fireRate = Math.max(0.35, this.baseFireRate * fireRateMultiplier);
+    this.range = Math.max(70, this.range);
+    this.burnChance = Math.max(0, Math.min(0.95, this.burnChance));
+    this.iceChance = Math.max(0, Math.min(0.95, this.iceChance));
+    this.oilChance = Math.max(0, Math.min(0.95, this.oilChance));
+    this.lightningChance = Math.max(0, Math.min(0.95, this.lightningChance));
+    this.lightningChains = Math.max(0, Math.round(this.lightningChains));
+    this.lightningRadius = Math.max(0, this.lightningRadius);
+    this.magicDamageMultiplier = Math.max(0.4, Math.min(4, this.magicDamageMultiplier));
   }
 }
 
 class Enemy {
-  constructor(y, wave, isBoss, startX, wallX, powerScale) {
+  constructor(y, wave, isBoss, startX, wallX, powerScale, durabilityScale) {
     this.x = startX;
     this.y = y;
     this.wallX = wallX;
     this.isBoss = isBoss;
-    this.radius = isBoss ? 20 : 12;
-    this.maxHp = (isBoss ? 620 + wave * 95 : 55 + wave * 18) * powerScale;
+    const baseRadius = isBoss ? 20 : 12;
+    const baseHp = isBoss ? 560 + wave * 80 : 48 + wave * 14;
+    const baseSpeed = isBoss ? 38 + wave * 0.9 : 62 + wave * 2.1;
+    const durability = durabilityScale || 1;
+
+    this.maxHp = baseHp * powerScale * durability;
     this.hp = this.maxHp;
-    this.speed = (isBoss ? 36 + wave : 58 + wave * 2.4) * Math.min(2.2, 1 + (powerScale - 1) * 0.45);
+    this.radius = baseRadius * (0.84 + 0.52 * Math.sqrt(durability));
+    const durabilitySpeedPenalty = Math.max(0.42, Math.min(1.45, 1 / Math.pow(durability, 0.72)));
+    const wavePowerBoost = Math.min(1.6, 1 + (powerScale - 1) * 0.2);
+    this.speed = baseSpeed * wavePowerBoost * durabilitySpeedPenalty;
     this.burnStacks = 0;
     this.burnTimer = 0;
+    this.burnPower = 1;
+    this.freezeStacks = 0;
+    this.freezeTimer = 0;
+    this.freezePower = 1;
     this.reachedWall = false;
   }
 
   update(dt) {
-    this.x -= this.speed * dt;
+    const slowMultiplier = Math.max(0.35, 1 - this.freezeStacks * 0.14);
+    this.x -= this.speed * slowMultiplier * dt;
     if (this.x <= this.wallX + this.radius) this.reachedWall = true;
   }
 
@@ -163,60 +201,128 @@ class Enemy {
     return this.hp > 0 && !this.reachedWall;
   }
 
-  tickBurn(dt) {
-    if (this.burnStacks <= 0) return;
-    this.burnTimer += dt;
-    if (this.burnTimer < 0.45) return;
-    this.burnTimer = 0;
-    this.hp -= this.burnStacks * 3.6;
+  applyBurn(power = 1) {
+    if (this.freezeStacks > 0) {
+      this.freezeStacks = Math.max(0, this.freezeStacks - 1);
+      if (this.freezeStacks === 0) this.freezePower = 1;
+      return "thaw";
+    }
+    this.burnStacks += 1;
+    this.burnPower = Math.max(this.burnPower, power);
+    return "burn";
+  }
+
+  applyFreeze(power = 1) {
+    if (this.burnStacks > 0) {
+      this.burnStacks = Math.max(0, this.burnStacks - 1);
+      if (this.burnStacks === 0) this.burnPower = 1;
+      return "extinguish";
+    }
+    this.freezeStacks += 1;
+    this.freezePower = Math.max(this.freezePower, power);
+    return "freeze";
+  }
+
+  tickStatus(dt) {
+    if (this.burnStacks > 0) {
+      this.burnTimer += dt;
+      if (this.burnTimer >= 0.45) {
+        this.burnTimer = 0;
+        this.hp -= this.burnStacks * 3.6 * this.burnPower;
+      }
+    }
+
+    if (this.freezeStacks > 0) {
+      this.freezeTimer += dt;
+      if (this.freezeTimer >= 0.6) {
+        this.freezeTimer = 0;
+        this.hp -= this.freezeStacks * 1.6 * this.freezePower;
+      }
+    }
   }
 }
 
 const BOSS_EVERY_WAVES = 5;
-const MAX_LINKS_PER_GUN = 5;
+const MAX_LINKS_PER_GUN = 8;
 const SPAWN_INTERVAL = 0.65;
 const WAVE_SIZE = (wave) => 6 + Math.floor(wave * 1.15);
+const ENEMY_POWER_PER_BOSS = 1.15;
+const WALL_DAMAGE_NORMAL_BASE = 0.75;
+const WALL_DAMAGE_BOSS_BASE = 4.2;
+const WALL_HP_MAX = 30;
 
 const LINK_CARDS = [
   {
     id: "gun_flat",
     target: "link",
     name: "Усиленный ствол",
-    description: "+10 урона (в звено)",
+    description: "+10 урона, но -10% скорости атаки",
     color: "#ffb86b",
-    effect: { flatDamage: 10 },
+    effect: { flatDamage: 10, fireRateMultiplier: 0.9 },
   },
   {
     id: "gun_mult",
     target: "link",
     name: "Фокус-катушка",
-    description: "x1.35 урона (в звено)",
+    description: "x1.35 урона, но -18% скорости атаки",
     color: "#ffd86e",
-    effect: { damageMultiplier: 1.35 },
+    effect: { damageMultiplier: 1.35, fireRateMultiplier: 0.82 },
   },
   {
     id: "gun_burn",
     target: "link",
     name: "Термоядро",
-    description: "+35% шанс поджога (в звено)",
+    description: "+35% шанс поджога, но -4 урона",
     color: "#ff7f6e",
-    effect: { burnChance: 0.35 },
+    effect: { burnChance: 0.35, flatDamage: -4 },
+  },
+  {
+    id: "gun_lightning",
+    target: "link",
+    name: "Цепная молния",
+    description: "22% шанс молнии (3 скачка), но -12% урона",
+    color: "#d8f0ff",
+    effect: { lightningChance: 0.22, lightningChains: 3, lightningRadius: 130, damageMultiplier: 0.88 },
+  },
+  {
+    id: "gun_ice",
+    target: "link",
+    name: "Ледяной контур",
+    description: "28% шанс льда (замедление+дот), но -8% скорости атаки",
+    color: "#9bd5ff",
+    effect: { iceChance: 0.28, fireRateMultiplier: 0.92 },
+  },
+  {
+    id: "gun_oil",
+    target: "link",
+    name: "Масляный распыл",
+    description: "18% шанс создать лужу, но -6 урона",
+    color: "#7f8a9f",
+    effect: { oilChance: 0.18, flatDamage: -6 },
+  },
+  {
+    id: "gun_magic_amp",
+    target: "link",
+    name: "Магический фокус",
+    description: "+40% маг. урону (огонь/лёд/молнии), но -14% физ. урона",
+    color: "#d6a7ff",
+    effect: { magicDamageMultiplier: 1.4, damageMultiplier: 0.86 },
   },
   {
     id: "gun_aspd_1",
     target: "link",
     name: "Разгон затвора",
-    description: "+25% к скорости атаки (в звено)",
+    description: "+25% скорости атаки, но -12% урона",
     color: "#80e6ff",
-    effect: { fireRateMultiplier: 1.25 },
+    effect: { fireRateMultiplier: 1.25, damageMultiplier: 0.88 },
   },
   {
     id: "gun_aspd_2",
     target: "link",
     name: "Турбо-автоматика",
-    description: "+45% к скорости атаки (в звено)",
+    description: "+45% скорости атаки, но -20% урона и -20 дальности",
     color: "#4bc7ff",
-    effect: { fireRateMultiplier: 1.45 },
+    effect: { fireRateMultiplier: 1.45, damageMultiplier: 0.8, rangeBonus: -20 },
   },
   {
     id: "gun_sniper",
@@ -238,17 +344,17 @@ const LINK_CARDS = [
     id: "link_x2",
     target: "link",
     name: "Резонатор",
-    description: "x2 усиление в звене",
+    description: "x2 урона, но -30% скорости атаки и -15% шанса ожога",
     color: "#7dff9d",
-    effect: { multiplier: 2 },
+    effect: { multiplier: 2, fireRateMultiplier: 0.7, burnChance: -0.15 },
   },
   {
     id: "link_x15",
     target: "link",
     name: "Стабилизатор",
-    description: "x1.5 усиление в звене",
+    description: "x1.5 урона, но -15% скорости атаки",
     color: "#54f0b3",
-    effect: { multiplier: 1.5 },
+    effect: { multiplier: 1.5, fireRateMultiplier: 0.85 },
   },
 ];
 
@@ -314,6 +420,7 @@ const world = {
   enemies: [],
   beams: [],
   particles: [],
+  puddles: [],
 };
 
 const state = {
@@ -321,7 +428,7 @@ const state = {
   lens: new Lens(),
   wave: 1,
   kills: 0,
-  wallHp: 20,
+  wallHp: WALL_HP_MAX,
   waveQueue: 0,
   spawnTimer: 0,
   nextWaveDelay: 2.3,
@@ -378,6 +485,10 @@ function cardIcon(card) {
   if (id.includes("flat")) return "💥";
   if (id.includes("mult")) return "✖";
   if (id.includes("burn")) return "🔥";
+  if (id.includes("lightning")) return "⚡";
+  if (id.includes("ice")) return "❄";
+  if (id.includes("oil")) return "🛢";
+  if (id.includes("magic")) return "✨";
   if (id.includes("aspd")) return "⚡";
   if (id.includes("sniper")) return "🎯";
   if (id.includes("shotgun")) return "🔫";
@@ -391,6 +502,10 @@ function cardArtSeed(card) {
   if (id.includes("flat")) return { glyph: "BLAST", c1: "#ff9a5b", c2: "#ffd38b" };
   if (id.includes("mult")) return { glyph: "CORE", c1: "#ffe377", c2: "#ffb347" };
   if (id.includes("burn")) return { glyph: "FIRE", c1: "#ff6f61", c2: "#ffbe7a" };
+  if (id.includes("lightning")) return { glyph: "BOLT", c1: "#b5e8ff", c2: "#e6faff" };
+  if (id.includes("ice")) return { glyph: "FROST", c1: "#90d4ff", c2: "#d7f1ff" };
+  if (id.includes("oil")) return { glyph: "OIL", c1: "#848b9b", c2: "#b1b7c8" };
+  if (id.includes("magic")) return { glyph: "ARCANA", c1: "#cd9dff", c2: "#e7d4ff" };
   if (id.includes("aspd")) return { glyph: "ARC", c1: "#6ed7ff", c2: "#9ff3ff" };
   if (id.includes("sniper")) return { glyph: "LINE", c1: "#c2a6ff", c2: "#e3d7ff" };
   if (id.includes("shotgun")) return { glyph: "CONE", c1: "#86c9ff", c2: "#cceaff" };
@@ -430,7 +545,7 @@ function gunUpgradesText(gun) {
 function updateHud() {
   ui.wave.textContent = String(state.wave);
   ui.kills.textContent = String(state.kills);
-  ui.baseHp.textContent = String(state.wallHp);
+  ui.baseHp.textContent = String(Math.max(0, state.wallHp).toFixed(1));
   ui.nextCard.textContent = state.pendingRegularCardRewards > 0 ? "0" : "1";
   ui.restartBtn.classList.toggle("hidden", !state.gameOver);
 
@@ -464,6 +579,9 @@ function updateHud() {
       `<div>Дальность: ${gun.range.toFixed(0)}</div>`,
       `<div>Зона атаки: ${zone}</div>`,
       `<div>Ожог: ${(gun.burnChance * 100).toFixed(0)}%</div>`,
+      `<div>Лёд: ${(gun.iceChance * 100).toFixed(0)}% | Лужа: ${(gun.oilChance * 100).toFixed(0)}%</div>`,
+      `<div>Молния: ${(gun.lightningChance * 100).toFixed(0)}% (${gun.lightningChains} скач.)</div>`,
+      `<div>Маг. множитель: x${gun.magicDamageMultiplier.toFixed(2)}</div>`,
       `<div>Звенья: ${buffedLinks}/${totalLinks} (макс ${MAX_LINKS_PER_GUN})</div>`,
       `<div>Апгрейды: ${gunUpgradesText(gun)}</div>`,
     ].join("");
@@ -532,6 +650,8 @@ function showTargetPick(title, guns, onPick) {
       `💥 ${gun.baseDamage}+${gun.flatDamage}<br/>`,
       `✖ ${gun.multiplier.toFixed(2)} | ⚡ ${gun.fireRate.toFixed(2)}/с<br/>`,
       `🎯 ${zoneName(gun)} | 📏 ${gun.range.toFixed(0)}<br/>`,
+      `🔥 ${(gun.burnChance * 100).toFixed(0)}% | ❄ ${(gun.iceChance * 100).toFixed(0)}% | 🛢 ${(gun.oilChance * 100).toFixed(0)}%<br/>`,
+      `⚡ ${(gun.lightningChance * 100).toFixed(0)}% (${gun.lightningChains}) | ✨ x${gun.magicDamageMultiplier.toFixed(2)}<br/>`,
       `🔗 ${buffedLinks}/${MAX_LINKS_PER_GUN}<br/>`,
       `Апгрейды: ${gunUpgradesText(gun)}`,
       `</div>`,
@@ -626,15 +746,30 @@ function beginWave(wave) {
 function spawnEnemy() {
   const y =
     world.monsterYMin + Math.random() * (world.monsterYMax - world.monsterYMin);
+
+  let durabilityScale = 1;
+  if (state.isBossWave) {
+    durabilityScale = 1.25 + Math.random() * 0.45;
+  } else {
+    durabilityScale = 0.8 + Math.random() * 0.9;
+  }
+
   const enemy = new Enemy(
     y,
     state.wave,
     state.isBossWave,
     world.monsterStartX,
     world.wall.x,
-    state.enemyPowerScale
+    state.enemyPowerScale,
+    durabilityScale
   );
   world.enemies.push(enemy);
+}
+
+function enemyWallDamage(enemy) {
+  const power = Math.pow(state.enemyPowerScale, 0.9);
+  if (enemy.isBoss) return WALL_DAMAGE_BOSS_BASE * power;
+  return WALL_DAMAGE_NORMAL_BASE * power;
 }
 
 function enemyInGunZone(gun, enemy) {
@@ -651,9 +786,66 @@ function enemyInGunZone(gun, enemy) {
   return Math.hypot(dx, enemy.y - gun.y) <= gun.range;
 }
 
-function applyHit(enemy, damage, burnChance) {
+function applyMagicDamage(enemy, amount) {
+  enemy.hp -= amount;
+  world.particles.push({ x: enemy.x, y: enemy.y, life: 0.22, size: 2 + Math.random() * 2.1 });
+}
+
+function createOilPuddle(x, y, magicScale) {
+  if (world.puddles.length >= 18) return;
+  world.puddles.push({
+    x,
+    y,
+    radius: 34,
+    life: 8,
+    ignited: false,
+    tickTimer: 0,
+    magicScale: magicScale || 1,
+  });
+}
+
+function triggerLightning(gun, startEnemy) {
+  if (gun.lightningChance <= 0 || gun.lightningChains <= 0 || gun.lightningRadius <= 0) return;
+  if (Math.random() >= gun.lightningChance) return;
+
+  const magicMult = gun.magicDamageMultiplier;
+  let current = startEnemy;
+  const visited = new Set([startEnemy]);
+  applyMagicDamage(startEnemy, 8 * magicMult);
+
+  for (let jump = 0; jump < gun.lightningChains; jump += 1) {
+    let next = null;
+    let bestDist = Infinity;
+    for (const enemy of world.enemies) {
+      if (!enemy.alive() || visited.has(enemy)) continue;
+      const dist = Math.hypot(enemy.x - current.x, enemy.y - current.y);
+      if (dist <= gun.lightningRadius && dist < bestDist) {
+        bestDist = dist;
+        next = enemy;
+      }
+    }
+    if (!next) break;
+    visited.add(next);
+    applyMagicDamage(next, (7 - jump * 1.2) * magicMult);
+    world.beams.push({
+      x1: current.x,
+      y1: current.y,
+      x2: next.x,
+      y2: next.y,
+      crit: false,
+      life: 0.12,
+      color: "rgba(195,238,255,0.95)",
+    });
+    current = next;
+  }
+}
+
+function applyHit(gun, enemy, damage, burnChance) {
   enemy.hp -= damage;
-  if (Math.random() < burnChance) enemy.burnStacks += 1;
+  if (Math.random() < burnChance) enemy.applyBurn(gun.magicDamageMultiplier);
+  if (Math.random() < gun.iceChance) enemy.applyFreeze(gun.magicDamageMultiplier);
+  if (Math.random() < gun.oilChance) createOilPuddle(enemy.x, enemy.y, gun.magicDamageMultiplier);
+  triggerLightning(gun, enemy);
   world.particles.push({ x: enemy.x, y: enemy.y, life: 0.25, size: 2 + Math.random() * 2.5 });
 }
 
@@ -692,7 +884,7 @@ function fireShotgun(gun, baseDamage, burnChance) {
     }
 
     if (hit) {
-      applyHit(hit, baseDamage * 0.42, burnChance);
+      applyHit(gun, hit, baseDamage * 0.42, burnChance);
       world.beams.push({
         x1: gun.x,
         y1: gun.y,
@@ -738,7 +930,7 @@ function handleShooting(dt) {
       return;
     }
 
-    applyHit(target, damage, totalBurn);
+    applyHit(gun, target, damage, totalBurn);
     world.beams.push({
       x1: gun.x,
       y1: gun.y,
@@ -753,12 +945,23 @@ function handleShooting(dt) {
 function updateEnemies(dt) {
   for (const enemy of world.enemies) {
     enemy.update(dt);
-    enemy.tickBurn(dt);
+    enemy.tickStatus(dt);
+
+    for (const puddle of world.puddles) {
+      if (puddle.ignited) continue;
+      const inPuddle = Math.hypot(enemy.x - puddle.x, enemy.y - puddle.y) <= puddle.radius + enemy.radius * 0.2;
+      if (inPuddle && enemy.burnStacks > 0) {
+        puddle.ignited = true;
+        puddle.tickTimer = 0;
+        puddle.magicScale = Math.max(puddle.magicScale || 1, enemy.burnPower || 1);
+      }
+    }
+
     if (enemy.reachedWall && enemy.hp > 0) {
-      const wallDmg = Math.max(1, Math.ceil((enemy.isBoss ? 5 : 1) * state.enemyPowerScale));
+      const wallDmg = enemyWallDamage(enemy);
       state.wallHp -= wallDmg;
       enemy.hp = -1;
-      logLine(`${enemy.isBoss ? "Босс" : "Монстр"} ударил стену: -${wallDmg} HP.`);
+      logLine(`${enemy.isBoss ? "Босс" : "Монстр"} ударил стену: -${wallDmg.toFixed(1)} HP.`);
       if (state.wallHp <= 0) state.gameOver = true;
     }
   }
@@ -779,10 +982,10 @@ function clearDeadEnemies() {
   if (killsNow === 0) return;
   state.kills += killsNow;
   if (deadBosses.length > 0) {
-    state.enemyPowerScale *= 1.2;
+    state.enemyPowerScale *= ENEMY_POWER_PER_BOSS;
     state.pendingBossLensRewards += deadBosses.length;
     logLine("Босс уничтожен. Выдано редкое улучшение линзы.");
-    logLine(`Сила монстров выросла на 20% (x${state.enemyPowerScale.toFixed(2)}).`);
+    logLine(`Сила монстров выросла на 15% (x${state.enemyPowerScale.toFixed(2)}).`);
   }
   maybeOfferQueuedRewards();
 }
@@ -824,6 +1027,22 @@ function updateVisualEffects(dt) {
     p.y -= dt * 14;
   });
   world.particles = world.particles.filter((p) => p.life > 0);
+
+  for (const puddle of world.puddles) {
+    puddle.life -= dt;
+    if (!puddle.ignited) continue;
+    puddle.tickTimer += dt;
+    if (puddle.tickTimer < 0.25) continue;
+    puddle.tickTimer = 0;
+    for (const enemy of world.enemies) {
+      if (!enemy.alive()) continue;
+      const inPuddle = Math.hypot(enemy.x - puddle.x, enemy.y - puddle.y) <= puddle.radius + enemy.radius * 0.25;
+      if (!inPuddle) continue;
+      applyMagicDamage(enemy, 4.4 * puddle.magicScale);
+      enemy.applyBurn(puddle.magicScale);
+    }
+  }
+  world.puddles = world.puddles.filter((p) => p.life > 0);
 }
 
 function drawBackground() {
@@ -836,19 +1055,16 @@ function drawBackground() {
 
 function drawZones() {
   const zones = [
-    { x: 0, w: 150, label: "ДВИЖОК", color: "rgba(41,123,109,0.12)" },
-    { x: 150, w: 140, label: "ЛИНЗА", color: "rgba(60,111,167,0.12)" },
-    { x: 290, w: 160, label: "ПУШКИ", color: "rgba(71,96,167,0.14)" },
-    { x: 450, w: 70, label: "СТЕНА", color: "rgba(168,75,75,0.12)" },
-    { x: 520, w: 440, label: "МОНСТРЫ", color: "rgba(147,92,62,0.12)" },
+    { x: 0, w: 150, color: "rgba(41,123,109,0.12)" },
+    { x: 150, w: 140, color: "rgba(60,111,167,0.12)" },
+    { x: 290, w: 160, color: "rgba(71,96,167,0.14)" },
+    { x: 450, w: 70, color: "rgba(168,75,75,0.12)" },
+    { x: 520, w: 440, color: "rgba(147,92,62,0.12)" },
   ];
 
   zones.forEach((zone) => {
     ctx.fillStyle = zone.color;
     ctx.fillRect(zone.x, 0, zone.w, world.height);
-    ctx.fillStyle = "rgba(173,208,235,0.86)";
-    ctx.font = "700 13px Space Grotesk";
-    ctx.fillText(zone.label, zone.x + 10, 20);
   });
 }
 
@@ -944,19 +1160,43 @@ function drawGuns() {
 
 function drawWall() {
   const w = world.wall;
-  const hpRatio = Math.max(0, state.wallHp / 20);
+  const hpRatio = Math.max(0, Math.min(1, state.wallHp / WALL_HP_MAX));
+  const innerHeight = Math.max(0, w.h * hpRatio - 4);
   ctx.fillStyle = "#243646";
   ctx.fillRect(w.x, w.y, w.w, w.h);
   ctx.fillStyle = "#72e4b2";
-  ctx.fillRect(w.x, w.y + w.h * (1 - hpRatio), w.w, w.h * hpRatio);
+  ctx.fillRect(w.x + 2, w.y + w.h * (1 - hpRatio) + 2, w.w - 4, innerHeight);
   ctx.strokeStyle = "#97b8cd";
   ctx.lineWidth = 2;
   ctx.strokeRect(w.x - 1, w.y - 1, w.w + 2, w.h + 2);
 }
 
+function drawPuddles() {
+  for (const puddle of world.puddles) {
+    ctx.beginPath();
+    ctx.arc(puddle.x, puddle.y, puddle.radius, 0, Math.PI * 2);
+    if (puddle.ignited) {
+      ctx.fillStyle = "rgba(255,129,72,0.28)";
+      ctx.strokeStyle = "rgba(255,193,122,0.55)";
+    } else {
+      ctx.fillStyle = "rgba(68,74,89,0.32)";
+      ctx.strokeStyle = "rgba(126,136,156,0.45)";
+    }
+    ctx.fill();
+    ctx.lineWidth = 1;
+    ctx.stroke();
+  }
+}
+
 function drawEnemies() {
   world.enemies.forEach((enemy) => {
-    ctx.fillStyle = enemy.isBoss ? "#a054f0" : enemy.burnStacks > 0 ? "#eb8a57" : "#ca6f6f";
+    ctx.fillStyle = enemy.isBoss
+      ? "#a054f0"
+      : enemy.freezeStacks > 0
+        ? "#84bbf0"
+        : enemy.burnStacks > 0
+          ? "#eb8a57"
+          : "#ca6f6f";
     ctx.beginPath();
     ctx.arc(enemy.x, enemy.y, enemy.radius, 0, Math.PI * 2);
     ctx.fill();
@@ -978,7 +1218,7 @@ function drawEnemies() {
 
 function drawBeamsAndParticles() {
   world.beams.forEach((beam) => {
-    ctx.strokeStyle = beam.crit ? "rgba(255,220,120,0.92)" : "rgba(128,220,255,0.88)";
+    ctx.strokeStyle = beam.color || (beam.crit ? "rgba(255,220,120,0.92)" : "rgba(128,220,255,0.88)");
     ctx.lineWidth = beam.crit ? 3.1 : 2.2;
     ctx.beginPath();
     ctx.moveTo(beam.x1, beam.y1);
@@ -996,24 +1236,6 @@ function drawBeamsAndParticles() {
   });
 }
 
-function drawDirectionArrow() {
-  ctx.strokeStyle = "#ffc8a1";
-  ctx.fillStyle = "#ffc8a1";
-  ctx.lineWidth = 2;
-  ctx.beginPath();
-  ctx.moveTo(892, 50);
-  ctx.lineTo(770, 50);
-  ctx.stroke();
-  ctx.beginPath();
-  ctx.moveTo(770, 50);
-  ctx.lineTo(782, 44);
-  ctx.lineTo(782, 56);
-  ctx.closePath();
-  ctx.fill();
-  ctx.font = "700 11px Space Grotesk";
-  ctx.fillText("Монстры идут влево", 790, 42);
-}
-
 function drawGameOver() {
   if (!state.gameOver) return;
   ctx.fillStyle = "rgba(4,6,10,0.62)";
@@ -1028,8 +1250,8 @@ function render(now) {
   drawZones();
   drawEngineAndLens(now);
   drawWall();
-  drawDirectionArrow();
   drawBeamsAndParticles();
+  drawPuddles();
   drawEnemies();
   drawGuns();
   drawGameOver();
