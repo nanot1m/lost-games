@@ -1097,6 +1097,35 @@ function onCanvasClick(event) {
   updateHud();
 }
 
+function getTouchPoint(touchEvent) {
+  const touch = touchEvent.touches[0] ?? touchEvent.changedTouches[0];
+  return { clientX: touch.clientX, clientY: touch.clientY };
+}
+
+function onCanvasTouchStart(event) {
+  event.preventDefault();
+  const { x, y } = canvasToWorld(getTouchPoint(event));
+  pickGunAt(x, y);
+  state.draggingGunIndex = state.selectedGunIndex;
+  updateHud();
+}
+
+function onCanvasTouchMove(event) {
+  event.preventDefault();
+  if (state.draggingGunIndex < 0) return;
+  const { y } = canvasToWorld(getTouchPoint(event));
+  const gun = world.guns[state.draggingGunIndex];
+  const minY = world.wall.y + 24;
+  const maxY = world.wall.y + world.wall.h - 24;
+  gun.x = world.wall.x + world.wall.w / 2;
+  gun.y = Math.max(minY, Math.min(maxY, y));
+}
+
+function onCanvasTouchEnd(event) {
+  event.preventDefault();
+  state.draggingGunIndex = -1;
+}
+
 function init() {
   canvas.addEventListener("mousedown", onCanvasMouseDown);
   canvas.addEventListener("mousemove", onCanvasMouseMove);
@@ -1104,6 +1133,10 @@ function init() {
   canvas.addEventListener("mouseleave", onCanvasMouseUp);
   window.addEventListener("mouseup", onCanvasMouseUp);
   canvas.addEventListener("click", onCanvasClick);
+  canvas.addEventListener("touchstart", onCanvasTouchStart, { passive: false });
+  canvas.addEventListener("touchmove", onCanvasTouchMove, { passive: false });
+  canvas.addEventListener("touchend", onCanvasTouchEnd, { passive: false });
+  canvas.addEventListener("touchcancel", onCanvasTouchEnd, { passive: false });
   ui.restartBtn.addEventListener("click", () => {
     window.location.reload();
   });
