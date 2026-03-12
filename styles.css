@@ -33,6 +33,7 @@ body {
 }
 
 .board {
+  position: relative;
   border: 1px solid var(--line);
   border-radius: 16px;
   overflow: hidden;
@@ -45,6 +46,27 @@ body {
   width: 100%;
   height: auto;
   display: block;
+}
+
+.restart-btn {
+  position: absolute;
+  left: 50%;
+  top: 62%;
+  transform: translate(-50%, -50%);
+  border: 1px solid #8fe5c3;
+  border-radius: 12px;
+  padding: 0.72rem 1.2rem;
+  font-family: "Space Grotesk", sans-serif;
+  font-size: 1rem;
+  font-weight: 700;
+  color: #072b21;
+  background: linear-gradient(120deg, #6ff0c0, #a8ffe0);
+  cursor: pointer;
+  z-index: 5;
+}
+
+.restart-btn:hover {
+  filter: brightness(1.04);
 }
 
 .hud {
@@ -200,6 +222,7 @@ body {
   --card-accent: #79c7a6;
   --i: 0;
   --count: 1;
+  --art-bg: none;
   border: 1px solid color-mix(in srgb, var(--card-accent) 45%, #274865);
   background:
     linear-gradient(160deg, rgba(17, 40, 61, 0.95), rgba(10, 27, 44, 0.96)),
@@ -255,6 +278,18 @@ body {
   flex-wrap: wrap;
 }
 
+.game-card-icon {
+  width: 24px;
+  height: 24px;
+  border-radius: 999px;
+  display: inline-grid;
+  place-items: center;
+  font-size: 0.86rem;
+  background: color-mix(in srgb, var(--card-accent) 35%, #0f2b45);
+  border: 1px solid color-mix(in srgb, var(--card-accent) 70%, #385f7f);
+  box-shadow: inset 0 0 8px rgba(255, 255, 255, 0.12);
+}
+
 .game-card-type {
   display: inline-block;
   border-radius: 999px;
@@ -277,13 +312,24 @@ body {
   font-size: 0.8rem;
   line-height: 1.28;
   overflow: auto;
-  max-height: 160px;
+  max-height: 104px;
   padding-right: 0.1rem;
 }
 
 .gun-card-choice .game-card-body {
   font-size: 0.76rem;
-  max-height: 168px;
+  max-height: 112px;
+}
+
+.game-card-art {
+  height: 82px;
+  margin: 0.18rem 0 0.38rem;
+  border-radius: 10px;
+  border: 1px solid rgba(132, 170, 197, 0.4);
+  background-image: var(--art-bg);
+  background-size: cover;
+  background-position: center;
+  box-shadow: inset 0 0 16px rgba(7, 17, 28, 0.5);
 }
 
 .card-list .game-card:first-child,

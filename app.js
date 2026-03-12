@@ -292,6 +292,7 @@ const ui = {
   cardHint: document.getElementById("cardHint"),
   cardChoices: document.getElementById("cardChoices"),
   targetChoices: document.getElementById("targetChoices"),
+  restartBtn: document.getElementById("restartBtn"),
 };
 
 const world = {
@@ -372,6 +373,55 @@ function zoneName(gun) {
   return "Круг";
 }
 
+function cardIcon(card) {
+  const id = card.id || "";
+  if (id.includes("flat")) return "💥";
+  if (id.includes("mult")) return "✖";
+  if (id.includes("burn")) return "🔥";
+  if (id.includes("aspd")) return "⚡";
+  if (id.includes("sniper")) return "🎯";
+  if (id.includes("shotgun")) return "🔫";
+  if (id.includes("x2") || id.includes("x15")) return "🔗";
+  if (id.includes("lens")) return "🔮";
+  return "🃏";
+}
+
+function cardArtSeed(card) {
+  const id = card.id || "";
+  if (id.includes("flat")) return { glyph: "BLAST", c1: "#ff9a5b", c2: "#ffd38b" };
+  if (id.includes("mult")) return { glyph: "CORE", c1: "#ffe377", c2: "#ffb347" };
+  if (id.includes("burn")) return { glyph: "FIRE", c1: "#ff6f61", c2: "#ffbe7a" };
+  if (id.includes("aspd")) return { glyph: "ARC", c1: "#6ed7ff", c2: "#9ff3ff" };
+  if (id.includes("sniper")) return { glyph: "LINE", c1: "#c2a6ff", c2: "#e3d7ff" };
+  if (id.includes("shotgun")) return { glyph: "CONE", c1: "#86c9ff", c2: "#cceaff" };
+  if (id.includes("x2") || id.includes("x15")) return { glyph: "CHAIN", c1: "#78ffac", c2: "#b8ffd2" };
+  if (id.includes("lens")) return { glyph: "LENS", c1: "#80b6ff", c2: "#a8e7ff" };
+  return { glyph: "CARD", c1: "#7fd8ff", c2: "#b8f5ff" };
+}
+
+function svgToDataUri(svg) {
+  return `url("data:image/svg+xml,${encodeURIComponent(svg)}")`;
+}
+
+function cardArtDataUri(card) {
+  const seed = cardArtSeed(card);
+  const svg = `
+<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 280 180'>
+  <defs>
+    <linearGradient id='g' x1='0' y1='0' x2='1' y2='1'>
+      <stop offset='0%' stop-color='${seed.c1}' stop-opacity='0.95'/>
+      <stop offset='100%' stop-color='${seed.c2}' stop-opacity='0.9'/>
+    </linearGradient>
+  </defs>
+  <rect x='0' y='0' width='280' height='180' rx='18' fill='#0b2032'/>
+  <rect x='8' y='8' width='264' height='164' rx='14' fill='url(#g)' opacity='0.2'/>
+  <circle cx='140' cy='90' r='46' fill='url(#g)' opacity='0.28'/>
+  <circle cx='140' cy='90' r='26' fill='none' stroke='url(#g)' stroke-width='3'/>
+  <text x='140' y='98' text-anchor='middle' fill='#eaf8ff' font-size='20' font-family='Space Grotesk, Arial, sans-serif' font-weight='700'>${seed.glyph}</text>
+</svg>`;
+  return svgToDataUri(svg);
+}
+
 function gunUpgradesText(gun) {
   const upgrades = gun.links.filter((link) => link.isBuffed()).map((link) => link.buffName);
   return upgrades.length > 0 ? upgrades.join(", ") : "Нет апгрейдов";
@@ -382,6 +432,7 @@ function updateHud() {
   ui.kills.textContent = String(state.kills);
   ui.baseHp.textContent = String(state.wallHp);
   ui.nextCard.textContent = state.pendingRegularCardRewards > 0 ? "0" : "1";
+  ui.restartBtn.classList.toggle("hidden", !state.gameOver);
 
   ui.lensBuffs.innerHTML = "";
   if (state.lens.buffNames.length === 0) {
@@ -431,11 +482,14 @@ function openCardModal(cards, hint, onPick) {
     btn.style.setProperty("--card-accent", card.color || "#7dd6ff");
     btn.style.setProperty("--i", String(idx));
     btn.style.setProperty("--count", String(cards.length));
+    btn.style.setProperty("--art-bg", cardArtDataUri(card));
     btn.innerHTML = [
       `<div class="game-card-top">`,
+      `<span class="game-card-icon">${cardIcon(card)}</span>`,
       `<span class="game-card-type">${card.target.toUpperCase()}</span>`,
       `<strong class="game-card-title">${card.name}</strong>`,
       `</div>`,
+      `<div class="game-card-art"></div>`,
       `<div class="game-card-body">${card.description}</div>`,
     ].join("");
     btn.onclick = () => onPick(card);
@@ -463,16 +517,22 @@ function showTargetPick(title, guns, onPick) {
     btn.style.setProperty("--card-accent", "#7cf1c5");
     btn.style.setProperty("--i", String(idx));
     btn.style.setProperty("--count", String(guns.length));
+    btn.style.setProperty(
+      "--art-bg",
+      cardArtDataUri({ id: `gun_${zoneName(gun).toLowerCase()}`, color: "#7cf1c5" })
+    );
     btn.innerHTML = [
       `<div class="game-card-top">`,
+      `<span class="game-card-icon">🛡</span>`,
       `<span class="game-card-type">ПУШКА</span>`,
       `<strong class="game-card-title">${gun.name}</strong>`,
       `</div>`,
+      `<div class="game-card-art"></div>`,
       `<div class="game-card-body">`,
-      `Урон: ${gun.baseDamage}+${gun.flatDamage}<br/>`,
-      `x${gun.multiplier.toFixed(2)} | ${gun.fireRate.toFixed(2)}/с<br/>`,
-      `${zoneName(gun)} | R${gun.range.toFixed(0)}<br/>`,
-      `Звенья: ${buffedLinks}/${MAX_LINKS_PER_GUN}<br/>`,
+      `💥 ${gun.baseDamage}+${gun.flatDamage}<br/>`,
+      `✖ ${gun.multiplier.toFixed(2)} | ⚡ ${gun.fireRate.toFixed(2)}/с<br/>`,
+      `🎯 ${zoneName(gun)} | 📏 ${gun.range.toFixed(0)}<br/>`,
+      `🔗 ${buffedLinks}/${MAX_LINKS_PER_GUN}<br/>`,
       `Апгрейды: ${gunUpgradesText(gun)}`,
       `</div>`,
     ].join("");
@@ -1044,6 +1104,9 @@ function init() {
   canvas.addEventListener("mouseleave", onCanvasMouseUp);
   window.addEventListener("mouseup", onCanvasMouseUp);
   canvas.addEventListener("click", onCanvasClick);
+  ui.restartBtn.addEventListener("click", () => {
+    window.location.reload();
+  });
   beginWave(1);
   logLine("Старт TD: монстры двигаются справа налево к стене.");
   requestAnimationFrame((t) => {
