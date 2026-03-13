@@ -20,6 +20,7 @@ class SynthAudio {
     this.musicTempo = 112;
     this.musicStep = 0;
     this.musicNextTime = 0;
+    this.musicBar = 0;
   }
 
   unlock() {
@@ -143,6 +144,7 @@ class SynthAudio {
     this.unlock();
     if (!this.ctx || !this.musicMaster || this.musicInterval) return;
     this.musicStep = 0;
+    this.musicBar = 0;
     this.musicNextTime = this.ctx.currentTime + 0.08;
     this.musicInterval = window.setInterval(() => this.scheduleMusic(), 100);
   }
@@ -160,26 +162,35 @@ class SynthAudio {
     const lookAhead = 0.28;
     while (this.musicNextTime < this.ctx.currentTime + lookAhead) {
       this.scheduleMusicStep(this.musicStep, this.musicNextTime);
-      this.musicStep = (this.musicStep + 1) % 16;
+      this.musicStep += 1;
+      if (this.musicStep >= 16) {
+        this.musicStep = 0;
+        this.musicBar += 1;
+      }
       this.musicNextTime += 60 / this.musicTempo / 4;
     }
   }
 
   scheduleMusicStep(step, time) {
-    const kick = [0, 4, 8, 12].includes(step);
-    const hat = step % 2 === 0;
-    const bassStep = step % 4 === 0;
-    const padStep = step === 0 || step === 8;
+    const phase = this.getMusicPhase();
+    const isBoss = typeof state !== "undefined" && state.isBossWave;
+    this.musicTempo = isBoss ? 124 : phase.tempo;
 
-    if (kick) {
+    const kickPattern = phase.kick;
+    const hatPattern = phase.hat;
+    const bassPattern = phase.bass;
+    const arpPattern = phase.arp;
+    const padStep = step === 0 || (phase.padTwin && step === 8);
+
+    if (kickPattern.includes(step)) {
       this.tone({
         type: "sine",
-        frequency: 74,
-        frequencyEnd: 36,
+        frequency: isBoss ? 78 : 74,
+        frequencyEnd: isBoss ? 34 : 36,
         attack: 0.002,
         hold: 0.015,
         release: 0.18,
-        gain: 0.16,
+        gain: isBoss ? 0.17 : 0.16,
         filterFrequency: 260,
         time,
         destination: this.musicMaster,
@@ -196,12 +207,12 @@ class SynthAudio {
       });
     }
 
-    if (hat) {
+    if (hatPattern.includes(step)) {
       this.noise({
         attack: 0.001,
-        hold: 0.004,
-        release: 0.035,
-        gain: 0.018,
+        hold: phase.hatOpen && step % 8 === 6 ? 0.012 : 0.004,
+        release: phase.hatOpen && step % 8 === 6 ? 0.08 : 0.035,
+        gain: phase.hatGain,
         filterType: "highpass",
         filterFrequency: 5200,
         q: 0.8,
@@ -211,20 +222,40 @@ class SynthAudio {
       });
     }
 
-    if (bassStep) {
-      const notes = [55, 55, 65.4, 49];
-      const note = notes[(step / 4) % notes.length];
+    if (bassPattern.includes(step)) {
+      const notes = phase.bassNotes;
+      const note = notes[Math.floor(step / 4) % notes.length];
       this.tone({
         type: "sawtooth",
         frequency: note,
-        frequencyEnd: note * 0.92,
+        frequencyEnd: note * (phase.bassSlide || 0.92),
         attack: 0.01,
-        hold: 0.09,
-        release: 0.22,
-        gain: 0.05,
+        hold: phase.bassHold,
+        release: phase.bassRelease,
+        gain: phase.bassGain,
         filterType: "lowpass",
-        filterFrequency: 460,
+        filterFrequency: phase.bassFilter,
         q: 0.7,
+        time,
+        destination: this.musicMaster,
+      });
+    }
+
+    if (arpPattern.includes(step)) {
+      const arpNotes = phase.arpNotes;
+      const note = arpNotes[step % arpNotes.length];
+      this.tone({
+        type: phase.arpType,
+        frequency: note,
+        frequencyEnd: note * 1.18,
+        attack: 0.004,
+        hold: 0.02,
+        release: 0.12,
+        gain: phase.arpGain,
+        filterType: "bandpass",
+        filterFrequency: phase.arpFilter,
+        q: 0.8,
+        pan: step % 4 < 2 ? -0.16 : 0.16,
         time,
         destination: this.musicMaster,
       });
@@ -233,34 +264,177 @@ class SynthAudio {
     if (padStep) {
       this.tone({
         type: "triangle",
-        frequency: step === 0 ? 220 : 246.94,
-        frequencyEnd: step === 0 ? 246.94 : 293.66,
+        frequency: phase.padNotes[step === 0 ? 0 : 1],
+        frequencyEnd: phase.padNotes[step === 0 ? 1 : 2],
         attack: 0.12,
-        hold: 0.28,
-        release: 0.9,
-        gain: 0.028,
+        hold: phase.padHold,
+        release: phase.padRelease,
+        gain: phase.padGain,
         filterType: "lowpass",
-        filterFrequency: 1200,
+        filterFrequency: phase.padFilter,
         pan: step === 0 ? -0.16 : 0.16,
         time,
         destination: this.musicMaster,
       });
       this.tone({
         type: "sine",
-        frequency: step === 0 ? 440 : 493.88,
-        frequencyEnd: step === 0 ? 493.88 : 587.32,
+        frequency: phase.padTop[step === 0 ? 0 : 1],
+        frequencyEnd: phase.padTop[step === 0 ? 1 : 2],
         attack: 0.14,
         hold: 0.22,
-        release: 0.86,
-        gain: 0.018,
+        release: phase.padRelease * 0.92,
+        gain: phase.padGain * 0.62,
         filterType: "bandpass",
-        filterFrequency: 1400,
+        filterFrequency: phase.padFilter + 200,
         q: 0.5,
         pan: step === 0 ? 0.12 : -0.12,
         time,
         destination: this.musicMaster,
       });
     }
+  }
+
+  getMusicPhase() {
+    const phaseIndex = this.musicBar % 16;
+    const boss = typeof state !== "undefined" && state.isBossWave;
+    if (boss) {
+      return {
+        tempo: 124,
+        kick: [0, 3, 4, 8, 10, 12],
+        hat: [0, 2, 4, 6, 8, 10, 12, 14, 15],
+        hatOpen: true,
+        hatGain: 0.022,
+        bass: [0, 2, 4, 6, 8, 10, 12, 14],
+        bassNotes: [49, 55, 58.27, 46.25],
+        bassHold: 0.075,
+        bassRelease: 0.18,
+        bassGain: 0.06,
+        bassFilter: 540,
+        bassSlide: 0.88,
+        arp: [1, 5, 7, 9, 11, 13, 15],
+        arpNotes: [392, 493.88, 587.32, 783.99],
+        arpType: "square",
+        arpGain: 0.018,
+        arpFilter: 1900,
+        padTwin: true,
+        padNotes: [164.81, 196, 220],
+        padTop: [329.63, 392, 440],
+        padHold: 0.34,
+        padRelease: 0.78,
+        padGain: 0.02,
+        padFilter: 1100,
+      };
+    }
+    if (phaseIndex < 4) {
+      return {
+        tempo: 108,
+        kick: [0, 4, 8, 12],
+        hat: [2, 6, 10, 14],
+        hatOpen: false,
+        hatGain: 0.013,
+        bass: [0, 8],
+        bassNotes: [55, 65.4, 49, 61.74],
+        bassHold: 0.11,
+        bassRelease: 0.28,
+        bassGain: 0.04,
+        bassFilter: 420,
+        bassSlide: 0.95,
+        arp: [],
+        arpNotes: [],
+        arpType: "triangle",
+        arpGain: 0,
+        arpFilter: 1600,
+        padTwin: false,
+        padNotes: [220, 246.94, 293.66],
+        padTop: [440, 493.88, 587.32],
+        padHold: 0.4,
+        padRelease: 1,
+        padGain: 0.03,
+        padFilter: 1200,
+      };
+    }
+    if (phaseIndex < 8) {
+      return {
+        tempo: 112,
+        kick: [0, 4, 8, 12],
+        hat: [0, 2, 4, 6, 8, 10, 12, 14],
+        hatOpen: false,
+        hatGain: 0.018,
+        bass: [0, 4, 8, 12],
+        bassNotes: [55, 55, 65.4, 49],
+        bassHold: 0.09,
+        bassRelease: 0.22,
+        bassGain: 0.05,
+        bassFilter: 460,
+        bassSlide: 0.92,
+        arp: [3, 7, 11, 15],
+        arpNotes: [440, 493.88, 587.32, 659.25],
+        arpType: "triangle",
+        arpGain: 0.012,
+        arpFilter: 1700,
+        padTwin: true,
+        padNotes: [220, 246.94, 293.66],
+        padTop: [440, 493.88, 587.32],
+        padHold: 0.28,
+        padRelease: 0.9,
+        padGain: 0.028,
+        padFilter: 1200,
+      };
+    }
+    if (phaseIndex < 12) {
+      return {
+        tempo: 118,
+        kick: [0, 4, 7, 8, 12],
+        hat: [0, 2, 4, 6, 8, 10, 12, 14],
+        hatOpen: true,
+        hatGain: 0.02,
+        bass: [0, 2, 6, 8, 10, 14],
+        bassNotes: [49, 55, 61.74, 65.4],
+        bassHold: 0.075,
+        bassRelease: 0.18,
+        bassGain: 0.055,
+        bassFilter: 520,
+        bassSlide: 0.9,
+        arp: [1, 3, 5, 7, 9, 11, 13, 15],
+        arpNotes: [392, 440, 493.88, 587.32, 659.25, 783.99],
+        arpType: "sawtooth",
+        arpGain: 0.015,
+        arpFilter: 1850,
+        padTwin: true,
+        padNotes: [196, 220, 261.63],
+        padTop: [392, 440, 523.25],
+        padHold: 0.24,
+        padRelease: 0.76,
+        padGain: 0.022,
+        padFilter: 1250,
+      };
+    }
+    return {
+      tempo: 110,
+      kick: [0, 4, 8, 12],
+      hat: [2, 6, 10, 14],
+      hatOpen: true,
+      hatGain: 0.014,
+      bass: [0, 8],
+      bassNotes: [55, 49, 46.25, 65.4],
+      bassHold: 0.12,
+      bassRelease: 0.3,
+      bassGain: 0.036,
+      bassFilter: 400,
+      bassSlide: 0.96,
+      arp: [7, 15],
+      arpNotes: [440, 587.32, 493.88],
+      arpType: "sine",
+      arpGain: 0.01,
+      arpFilter: 1500,
+      padTwin: false,
+      padNotes: [174.61, 220, 246.94],
+      padTop: [349.23, 440, 493.88],
+      padHold: 0.46,
+      padRelease: 1.1,
+      padGain: 0.026,
+      padFilter: 1000,
+    };
   }
 
   uiTap() {
