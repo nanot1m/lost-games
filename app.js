@@ -108,7 +108,7 @@ class Gun {
       this.range = 210;
       this.verticalBand = 130;
       this.shotgunPellets = 5;
-      this.shotgunSpread = 120;
+      this.shotgunSpread = 42;
       this.baseFireRate = 2.1;
       return;
     }
@@ -893,6 +893,7 @@ function initializeGunSlots() {
     gun.chooseAttackProfile("circular");
   });
   placeInitialGunsOnWall();
+  setSelectedGuns([0], 0);
 }
 
 function unlockNextGunSlot(count = 1) {
@@ -1311,7 +1312,9 @@ function enemyInGunZone(gun, enemy) {
     return Math.abs(dy) <= halfWidth;
   }
   if (gun.attackMode === "shotgun") {
-    return dx <= gun.range && Math.abs(dy) <= gun.verticalBand / 2;
+    const halfAngle = ((gun.shotgunSpread || 120) * Math.PI) / 360;
+    const angle = Math.atan2(dy, dx);
+    return Math.hypot(dx, dy) <= gun.range && Math.abs(angle) <= halfAngle;
   }
   return Math.hypot(dx, dy) <= gun.range;
 }
@@ -1793,13 +1796,14 @@ function drawGuns() {
       ctx.closePath();
       ctx.stroke();
     } else if (gun.attackMode === "shotgun") {
-      const h = gun.verticalBand;
-      ctx.strokeRect(gun.x, gun.y - h / 2, gun.range, h);
-      ctx.strokeStyle = "rgba(88,173,234,0.14)";
+      const halfAngle = ((gun.shotgunSpread || 120) * Math.PI) / 360;
+      const yTop = gun.y - Math.tan(halfAngle) * gun.range;
+      const yBottom = gun.y + Math.tan(halfAngle) * gun.range;
       ctx.beginPath();
-      ctx.moveTo(gun.x, gun.y - h / 2);
-      ctx.lineTo(gun.x + gun.range, gun.y);
-      ctx.lineTo(gun.x, gun.y + h / 2);
+      ctx.moveTo(gun.x, gun.y);
+      ctx.lineTo(gun.x + gun.range, yTop);
+      ctx.lineTo(gun.x + gun.range, yBottom);
+      ctx.closePath();
       ctx.stroke();
     } else {
       ctx.beginPath();
@@ -2404,12 +2408,13 @@ function syncThreeWorld(now) {
       points.push(worldToThree(gun.x, gun.y + 8, 12));
       threeView.zoneGroup.add(makeThreeLine(points, 0x77d7ff, 0.36, true));
     } else if (gun.attackMode === "shotgun") {
+      const halfAngle = ((gun.shotgunSpread || 120) * Math.PI) / 360;
       const x2 = gun.x + gun.range;
-      const h = gun.verticalBand / 2;
-      points.push(worldToThree(gun.x, gun.y - h, 12));
-      points.push(worldToThree(x2, gun.y - h, 12));
-      points.push(worldToThree(x2, gun.y + h, 12));
-      points.push(worldToThree(gun.x, gun.y + h, 12));
+      const yTop = gun.y - Math.tan(halfAngle) * gun.range;
+      const yBottom = gun.y + Math.tan(halfAngle) * gun.range;
+      points.push(worldToThree(gun.x, gun.y, 12));
+      points.push(worldToThree(x2, yTop, 12));
+      points.push(worldToThree(x2, yBottom, 12));
       threeView.zoneGroup.add(makeThreeLine(points, 0x7ecbff, 0.3, true));
     } else {
       const steps = 44;
