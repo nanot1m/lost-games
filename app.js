@@ -1616,7 +1616,6 @@ function clearDeadEnemies() {
   if (deadBosses.length > 0) {
     state.enemyPowerScale *= ENEMY_POWER_PER_BOSS;
     state.pendingBossLensRewards += deadBosses.length;
-    unlockNextGunSlot(deadBosses.length);
     logLine("Босс уничтожен. Выдано редкое улучшение линзы.");
     logLine(`Сила монстров выросла на 15% (x${state.enemyPowerScale.toFixed(2)}).`);
   }
@@ -1638,6 +1637,10 @@ function updateWave(dt) {
   if (!state.waveRewardGranted) {
     state.pendingRegularCardRewards += 1;
     state.waveRewardGranted = true;
+    if (state.isBossWave) {
+      unlockNextGunSlot(1);
+      logLine("Босс-волна завершена. Открыт следующий слот пушки.");
+    }
     logLine("Волна завершена. Выдана карточка усиления.");
     maybeOfferQueuedRewards();
   }
