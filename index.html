@@ -14,14 +14,20 @@
   </head>
   <body>
     <main class="layout">
-      <section class="board">
-        <canvas id="gameCanvas" width="960" height="540"></canvas>
-        <div id="threeLayer" class="three-layer"></div>
-        <button id="restartBtn" class="restart-btn hidden" type="button">Начать заново</button>
-      </section>
+      <div class="play-column">
+        <section class="board">
+          <canvas id="gameCanvas" width="960" height="540"></canvas>
+          <div id="threeLayer" class="three-layer"></div>
+          <button id="restartBtn" class="restart-btn hidden" type="button">Начать заново</button>
+        </section>
+        <section class="gun-strip-wrap">
+          <div id="gunStrip" class="gun-strip"></div>
+        </section>
+      </div>
 
       <aside class="hud">
         <div class="hud-controls">
+          <button id="helpBtn" class="meta-btn" type="button">Справка</button>
           <button id="cardsInfoBtn" class="meta-btn" type="button">Таблица карт</button>
           <button id="pauseBtn" class="meta-btn" type="button">Пауза</button>
           <button id="threeModeBtn" class="meta-btn" type="button">3D режим</button>
@@ -60,6 +66,7 @@
         <p id="cardHint">Игра на паузе, пока карточка не выбрана.</p>
         <div id="cardChoices" class="card-list"></div>
         <div id="targetChoices" class="target-list"></div>
+        <div id="modalGunStrip" class="gun-strip modal-gun-strip"></div>
       </div>
     </div>
 
@@ -82,6 +89,60 @@
           </table>
         </div>
         <button id="cardsInfoCloseBtn" class="meta-btn" type="button">Закрыть</button>
+      </div>
+    </div>
+
+    <div id="helpModal" class="modal hidden">
+      <div class="modal-box help-box">
+        <h3>Справка</h3>
+        <p>Краткая памятка по управлению и текущим правилам Lost Games TD.</p>
+
+        <div class="help-grid">
+          <section class="help-section">
+            <h4>Как играть</h4>
+            <ul class="help-list">
+              <li>Монстры идут справа налево и пытаются пробить защитный полукруг.</li>
+              <li>Волны обычных врагов дают 1 карту усиления для звена пушки.</li>
+              <li>После убийства босса выпадает 1 из 3 редких бафов линзы и открывается новый слот пушки.</li>
+              <li>Максимум можно открыть 5 пушек. Бафы звеньев можно вешать и на неустановленные, но уже открытые пушки.</li>
+              <li>Каждая установленная пушка получает только часть общей энергии двигателя. Чем больше активных пушек, тем слабее поток на каждую.</li>
+            </ul>
+          </section>
+
+          <section class="help-section">
+            <h4>Управление</h4>
+            <ul class="help-list">
+              <li>ЛКМ по пушке: выбрать пушку.</li>
+              <li>Shift + ЛКМ: мультивыбор пушек.</li>
+              <li>Drag мышью по выбранной пушке: перемещение по дуге стены.</li>
+              <li>Tab / Shift + Tab: переключение между установленными пушками.</li>
+              <li>W / S: плавно двигать выбранную пушку по стене.</li>
+              <li>1 / 2 / 3: сменить профиль атаки выбранной пушки.</li>
+              <li>В 3D режиме drag по пустому полю вращает камеру, колесо мыши меняет зум.</li>
+            </ul>
+          </section>
+
+          <section class="help-section">
+            <h4>Профили атаки</h4>
+            <ul class="help-list">
+              <li>Круг: универсальная зона вокруг пушки.</li>
+              <li>Снайпер: редкие выстрелы по треугольной дальней зоне.</li>
+              <li>Дробовик: ближняя широкая зона с несколькими пулями.</li>
+            </ul>
+          </section>
+
+          <section class="help-section">
+            <h4>Бафы</h4>
+            <ul class="help-list">
+              <li>Обычные карты усиливают без штрафов.</li>
+              <li>Редкие и легендарные карты сильнее, но могут ослаблять другие характеристики.</li>
+              <li>Линза даёт глобальные эффекты всем установленным пушкам и не имеет негативных эффектов.</li>
+              <li>Элементальные эффекты конфликтуют: огонь снимает лёд, лёд тушит огонь.</li>
+            </ul>
+          </section>
+        </div>
+
+        <button id="helpCloseBtn" class="meta-btn" type="button">Закрыть</button>
       </div>
     </div>
 

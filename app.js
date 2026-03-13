@@ -71,11 +71,12 @@ class Gun {
     this.baseDamage = baseDamage;
     this.range = 130;
     this.attackMode = "circular";
-    this.baseFireRate = 3;
+    this.baseFireRate = 5;
+    this.profile = "circular";
     this.verticalBand = 0;
     this.shotgunPellets = 0;
     this.shotgunSpread = 0;
-    this.fireRate = 3;
+    this.fireRate = 5;
     this.cooldown = 0;
     this.energyMultiplier = 1;
     this.flatDamage = 0;
@@ -88,6 +89,8 @@ class Gun {
     this.lightningRadius = 0;
     this.magicDamageMultiplier = 1;
     this.links = Array.from({ length: linkSlots }, () => new Link());
+    this.installed = false;
+    this.slotUnlocked = false;
   }
 
   setAttackProfile(profile) {
@@ -113,7 +116,7 @@ class Gun {
     this.verticalBand = 0;
     this.shotgunPellets = 0;
     this.shotgunSpread = 0;
-    this.baseFireRate = 3;
+    this.baseFireRate = 5;
   }
 
   hasFreeLink() {
@@ -121,11 +124,10 @@ class Gun {
   }
 
   hasAttackProfile() {
-    return this.links.some((link) => link.isBuffed() && Boolean(link.effect.attackProfile));
+    return false;
   }
 
   applyLinkCard(card) {
-    if (card.effect.attackProfile && this.hasAttackProfile()) return false;
     const freeLink = this.links.find((link) => !link.isBuffed());
     if (!freeLink) return false;
     const applied = freeLink.applyCard(card);
@@ -145,7 +147,7 @@ class Gun {
     this.lightningRadius = 0;
     this.magicDamageMultiplier = 1;
     this.range = 130;
-    this.setAttackProfile("circular");
+    this.setAttackProfile(this.profile);
     let fireRateMultiplier = 1;
 
     for (const link of this.links) {
@@ -163,7 +165,6 @@ class Gun {
       this.magicDamageMultiplier *= effect.magicDamageMultiplier || 1;
       this.energyMultiplier *= effect.energyMultiplier || 1;
       this.range += effect.rangeBonus || 0;
-      if (effect.attackProfile) this.setAttackProfile(effect.attackProfile);
       fireRateMultiplier *= effect.fireRateMultiplier || 1;
     }
     this.fireRate = Math.max(0.35, this.baseFireRate * fireRateMultiplier);
@@ -177,12 +178,19 @@ class Gun {
     this.magicDamageMultiplier = Math.max(0.4, Math.min(4, this.magicDamageMultiplier));
     this.energyMultiplier = Math.max(0.4, Math.min(3, this.energyMultiplier));
   }
+
+  chooseAttackProfile(profile) {
+    this.profile = profile;
+    this.recomputeFromLinks();
+  }
 }
 
 class Enemy {
-  constructor(y, wave, isBoss, startX, wallCx, wallCy, wallR, powerScale, durabilityScale) {
+  constructor(y, wave, isBoss, startX, wallCx, wallCy, wallR, yMin, yMax, powerScale, durabilityScale) {
     this.x = startX;
     this.y = y;
+    this.yMin = yMin;
+    this.yMax = yMax;
     this.wallCx = wallCx;
     this.wallCy = wallCy;
     this.wallR = wallR;
@@ -191,9 +199,9 @@ class Enemy {
     const baseHp = isBoss ? 560 + wave * 80 : 48 + wave * 14;
     const baseSpeed = isBoss ? 38 + wave * 0.9 : 62 + wave * 2.1;
     const durability = durabilityScale || 1;
-    const firstBossEase = isBoss && wave === 5 ? 0.82 : 1;
+    const firstBossEase = isBoss && wave === 5 ? 0.5 : 1;
 
-    this.maxHp = baseHp * powerScale * durability * firstBossEase;
+    this.maxHp = baseHp * ENEMY_HP_WAVE_MULT * powerScale * durability * firstBossEase;
     this.hp = this.maxHp;
     this.radius = baseRadius * (0.84 + 0.52 * Math.sqrt(durability));
     const durabilitySpeedPenalty = Math.max(0.42, Math.min(1.45, 1 / Math.pow(durability, 0.72)));
@@ -207,11 +215,32 @@ class Enemy {
     this.freezePower = 1;
     this.lastHitKind = "physical";
     this.reachedWall = false;
+    this.targetY = y;
+    this.bossSteerTimer = 0;
+    this.bossSteerInterval = 0.7;
   }
 
   update(dt) {
     const slowMultiplier = Math.max(0.35, 1 - this.freezeStacks * 0.14);
     this.x -= this.speed * slowMultiplier * dt;
+
+    if (this.isBoss) {
+      this.bossSteerTimer -= dt;
+      if (this.bossSteerTimer <= 0) {
+        const pad = this.radius + 8;
+        const minY = this.yMin + pad;
+        const maxY = this.yMax - pad;
+        this.targetY = minY + Math.random() * Math.max(8, maxY - minY);
+        this.bossSteerInterval = 0.35 + Math.random() * 0.95;
+        this.bossSteerTimer = this.bossSteerInterval;
+      }
+      const toTarget = this.targetY - this.y;
+      const maxStep = this.speed * 0.75 * dt;
+      this.y += Math.max(-maxStep, Math.min(maxStep, toTarget));
+      const pad = this.radius + 4;
+      this.y = Math.max(this.yMin + pad, Math.min(this.yMax - pad, this.y));
+    }
+
     if (this.x >= this.wallCx) {
       const dist = Math.hypot(this.x - this.wallCx, this.y - this.wallCy);
       if (dist <= this.wallR + this.radius * 0.78) this.reachedWall = true;
@@ -266,7 +295,8 @@ class Enemy {
 const BOSS_EVERY_WAVES = 5;
 const MAX_LINKS_PER_GUN = 8;
 const SPAWN_INTERVAL = 0.65;
-const WAVE_SIZE = (wave) => (wave <= 3 ? 4 + wave : 5 + Math.floor(wave * 1.1));
+const WAVE_SIZE = (wave) => (wave <= 3 ? (4 + wave) * 2 : (5 + Math.floor(wave * 1.1)) * 2);
+const ENEMY_HP_WAVE_MULT = 0.5;
 const ENEMY_POWER_PER_BOSS = 1.15;
 const WALL_DAMAGE_NORMAL_BASE = 0.75;
 const WALL_DAMAGE_BOSS_BASE = 4.2;
@@ -366,24 +396,6 @@ const LINK_CARDS = [
     effect: { fireRateMultiplier: 1.8, damageMultiplier: 0.78, rangeBonus: -25 },
   },
   {
-    id: "gun_sniper",
-    target: "link",
-    name: "Снайперский ствол",
-    rarity: "rare",
-    color: RARITY_COLORS.rare,
-    description: "Снайпер-профиль, но -30% скорости атаки",
-    effect: { attackProfile: "sniper", fireRateMultiplier: 0.7 },
-  },
-  {
-    id: "gun_shotgun",
-    target: "link",
-    name: "Дробовик",
-    rarity: "rare",
-    color: RARITY_COLORS.rare,
-    description: "Дробовой профиль, но -18% урона",
-    effect: { attackProfile: "shotgun", damageMultiplier: 0.82 },
-  },
-  {
     id: "link_x2",
     target: "link",
     name: "Резонатор",
@@ -420,12 +432,11 @@ const LENS_CARDS = [
     name: "Линза жара",
     rarity: "rare",
     color: RARITY_COLORS.rare,
-    description: "Луч даёт +20% шанса ожога всем пушкам, но -8% энергии",
+    description: "Луч даёт +20% шанса ожога всем пушкам",
     applyLens: (lens) =>
       lens.addBuff("Жар", (p) => ({
         ...p,
         burnChance: p.burnChance + 0.2,
-        energyMultiplier: p.energyMultiplier * 0.92,
       })),
   },
   {
@@ -434,12 +445,11 @@ const LENS_CARDS = [
     name: "Линза мороза",
     rarity: "rare",
     color: RARITY_COLORS.rare,
-    description: "Луч даёт +18% шанса льда всем пушкам, но -8% энергии",
+    description: "Луч даёт +18% шанса льда всем пушкам",
     applyLens: (lens) =>
       lens.addBuff("Мороз", (p) => ({
         ...p,
         iceChance: p.iceChance + 0.18,
-        energyMultiplier: p.energyMultiplier * 0.92,
       })),
   },
   {
@@ -448,14 +458,13 @@ const LENS_CARDS = [
     name: "Линза грозы",
     rarity: "legendary",
     color: RARITY_COLORS.legendary,
-    description: "Луч даёт +14% шанса молнии (+1 скачок, +70 радиус), но -15% энергии",
+    description: "Луч даёт +14% шанса молнии (+1 скачок, +70 радиус)",
     applyLens: (lens) =>
       lens.addBuff("Гроза", (p) => ({
         ...p,
         lightningChance: p.lightningChance + 0.14,
         lightningChains: p.lightningChains + 1,
         lightningRadius: p.lightningRadius + 70,
-        energyMultiplier: p.energyMultiplier * 0.85,
       })),
   },
 ];
@@ -482,7 +491,12 @@ const ui = {
   cardHint: document.getElementById("cardHint"),
   cardChoices: document.getElementById("cardChoices"),
   targetChoices: document.getElementById("targetChoices"),
+  gunStrip: document.getElementById("gunStrip"),
+  modalGunStrip: document.getElementById("modalGunStrip"),
   restartBtn: document.getElementById("restartBtn"),
+  helpBtn: document.getElementById("helpBtn"),
+  helpModal: document.getElementById("helpModal"),
+  helpCloseBtn: document.getElementById("helpCloseBtn"),
   cardsInfoBtn: document.getElementById("cardsInfoBtn"),
   cardsInfoModal: document.getElementById("cardsInfoModal"),
   cardsInfoBody: document.getElementById("cardsInfoBody"),
@@ -497,11 +511,11 @@ const world = {
   enginePos: { x: 120, y: 270 },
   lensPos: { x: 215, y: 270 },
   guns: [
-    new Gun("Пушка A", 480, 90, 11, MAX_LINKS_PER_GUN),
-    new Gun("Пушка B", 480, 175, 12, MAX_LINKS_PER_GUN),
-    new Gun("Пушка C", 480, 260, 10, MAX_LINKS_PER_GUN),
-    new Gun("Пушка D", 480, 345, 11, MAX_LINKS_PER_GUN),
-    new Gun("Пушка E", 480, 430, 12, MAX_LINKS_PER_GUN),
+    new Gun("Пушка A", 480, 90, 8, MAX_LINKS_PER_GUN),
+    new Gun("Пушка B", 480, 175, 8, MAX_LINKS_PER_GUN),
+    new Gun("Пушка C", 480, 260, 8, MAX_LINKS_PER_GUN),
+    new Gun("Пушка D", 480, 345, 8, MAX_LINKS_PER_GUN),
+    new Gun("Пушка E", 480, 430, 8, MAX_LINKS_PER_GUN),
   ],
   wall: {
     x: 250,
@@ -542,11 +556,16 @@ const state = {
   pausedByCards: false,
   userPaused: false,
   threeMode: false,
+  unlockedGunSlots: 1,
   gameOver: false,
   pendingRegularCardRewards: 0,
   pendingBossLensRewards: 0,
   waveRewardGranted: false,
   enemyPowerScale: 1,
+  skipNextCanvasClick: false,
+  modalTargetPick: null,
+  moveGunUpHeld: false,
+  moveGunDownHeld: false,
   lastTime: performance.now(),
 };
 
@@ -558,7 +577,8 @@ function logLine(text) {
 }
 
 function allLinksBuffed() {
-  return world.guns.every((g) => g.links.every((link) => link.isBuffed()));
+  const unlocked = world.guns.filter((g) => g.slotUnlocked);
+  return unlocked.length > 0 && unlocked.every((g) => g.links.every((link) => link.isBuffed()));
 }
 
 function randomPick(pool, count) {
@@ -581,12 +601,9 @@ function randomPick(pool, count) {
 }
 
 function buildRegularCardPool() {
-  const hasFreeLink = world.guns.some((g) => g.hasFreeLink());
+  const hasFreeLink = world.guns.some((g) => g.slotUnlocked && g.hasFreeLink());
   if (!hasFreeLink) return [];
-  return LINK_CARDS.filter((card) => {
-    if (!card.effect.attackProfile) return true;
-    return world.guns.some((gun) => gun.hasFreeLink() && !gun.hasAttackProfile());
-  });
+  return LINK_CARDS;
 }
 
 function zoneName(gun) {
@@ -642,12 +659,39 @@ function renderCardsInfoTable() {
 function openCardsInfoModal() {
   if (!ui.cardsInfoModal) return;
   renderCardsInfoTable();
-  ui.cardsInfoModal.classList.remove("hidden");
+  openSimpleModal(ui.cardsInfoModal);
 }
 
 function closeCardsInfoModal() {
   if (!ui.cardsInfoModal) return;
-  ui.cardsInfoModal.classList.add("hidden");
+  closeSimpleModal(ui.cardsInfoModal);
+}
+
+function openHelpModal() {
+  if (!ui.helpModal) return;
+  openSimpleModal(ui.helpModal);
+}
+
+function closeHelpModal() {
+  if (!ui.helpModal) return;
+  closeSimpleModal(ui.helpModal);
+}
+
+function openSimpleModal(node) {
+  if (!node) return;
+  node.classList.remove("hidden");
+  node.classList.remove("modal-open");
+  requestAnimationFrame(() => {
+    requestAnimationFrame(() => {
+      node.classList.add("modal-open");
+    });
+  });
+}
+
+function closeSimpleModal(node) {
+  if (!node) return;
+  node.classList.remove("modal-open");
+  node.classList.add("hidden");
 }
 
 function cardIcon(card) {
@@ -729,7 +773,21 @@ function gunUpgradesText(gun) {
 }
 
 function getLensPacketPreview() {
-  const packets = state.lens.distribute(state.engine.produce(), world.guns.length);
+  const installed = getInstalledGuns();
+  if (installed.length === 0) {
+    return {
+      energy: 0,
+      energyMultiplier: 1,
+      burnChance: 0,
+      iceChance: 0,
+      lightningChance: 0,
+      lightningChains: 0,
+      lightningRadius: 0,
+      critChance: 0,
+      critMultiplier: 1.5,
+    };
+  }
+  const packets = state.lens.distribute(state.engine.produce(), installed.length);
   return packets[0] || {
     energy: 0,
     energyMultiplier: 1,
@@ -744,8 +802,11 @@ function getLensPacketPreview() {
 }
 
 function composeCombatStats(gun, packet) {
-  const energyScale = gun.energyMultiplier * (packet.energyMultiplier || 1);
+  const baseEnergy = Math.max(1, state.engine.produce());
+  const sharedEnergyScale = (packet.energy || 0) / baseEnergy;
+  const energyScale = sharedEnergyScale * gun.energyMultiplier * (packet.energyMultiplier || 1);
   return {
+    sharedEnergyScale,
     energyScale,
     magicScale: gun.magicDamageMultiplier * energyScale,
     burnChance: Math.max(0, Math.min(0.95, gun.burnChance + (packet.burnChance || 0))),
@@ -758,7 +819,9 @@ function composeCombatStats(gun, packet) {
 }
 
 function setSelectedGuns(indices, primary = -1) {
-  const unique = [...new Set(indices)].filter((idx) => idx >= 0 && idx < world.guns.length);
+  const unique = [...new Set(indices)].filter(
+    (idx) => idx >= 0 && idx < world.guns.length && world.guns[idx].installed
+  );
   state.selectedGunIndices = unique;
   if (unique.length === 0) {
     state.selectedGunIndex = -1;
@@ -792,11 +855,178 @@ function setGunOnWallByAngle(gun, angle) {
 }
 
 function placeInitialGunsOnWall() {
-  const count = world.guns.length;
-  world.guns.forEach((gun, idx) => {
+  const installed = world.guns.filter((g) => g.installed);
+  const count = installed.length;
+  installed.forEach((gun, idx) => {
     const t = count === 1 ? 0.5 : idx / (count - 1);
     const angle = world.wall.angleMin + (world.wall.angleMax - world.wall.angleMin) * t;
     setGunOnWallByAngle(gun, angle);
+  });
+}
+
+function getInstalledGuns() {
+  return world.guns.filter((g) => g.installed);
+}
+
+function getInstalledGunIndices() {
+  return world.guns.map((gun, idx) => (gun.installed ? idx : -1)).filter((idx) => idx >= 0);
+}
+
+function cycleSelectedGun(direction = 1) {
+  const installed = getInstalledGunIndices();
+  if (installed.length === 0) return;
+  const currentPos = installed.indexOf(state.selectedGunIndex);
+  if (currentPos < 0) {
+    const nextIdx = direction >= 0 ? installed[0] : installed[installed.length - 1];
+    setSelectedGuns([nextIdx], nextIdx);
+    return;
+  }
+  const nextPos = (currentPos + direction + installed.length) % installed.length;
+  const nextIdx = installed[nextPos];
+  setSelectedGuns([nextIdx], nextIdx);
+}
+
+function initializeGunSlots() {
+  world.guns.forEach((gun, idx) => {
+    gun.slotUnlocked = idx === 0;
+    gun.installed = idx === 0;
+    gun.chooseAttackProfile("circular");
+  });
+  placeInitialGunsOnWall();
+}
+
+function unlockNextGunSlot(count = 1) {
+  let unlockedNow = 0;
+  for (let i = 0; i < count; i += 1) {
+    const next = world.guns.find((g) => !g.slotUnlocked);
+    if (!next) break;
+    next.slotUnlocked = true;
+    unlockedNow += 1;
+    state.unlockedGunSlots += 1;
+  }
+  if (unlockedNow > 0) logLine(`Открыт слот пушки: +${unlockedNow}. (${state.unlockedGunSlots}/5)`);
+}
+
+function installGun(idx) {
+  const gun = world.guns[idx];
+  if (!gun || !gun.slotUnlocked || gun.installed) return;
+  gun.installed = true;
+  placeInitialGunsOnWall();
+}
+
+function removeGun(idx) {
+  const gun = world.guns[idx];
+  if (!gun || !gun.installed) return;
+  if (getInstalledGuns().length <= 1) return;
+  gun.installed = false;
+  setSelectedGuns(state.selectedGunIndices.filter((v) => v !== idx), state.selectedGunIndex);
+  placeInitialGunsOnWall();
+}
+
+function profileOptions() {
+  return [
+    {
+      id: "profile_circular",
+      name: "Круговой",
+      description: "Сбалансированная круговая зона.",
+      profile: "circular",
+      icon: "◎",
+      short: "Круг",
+      color: "#8f9aa7",
+      rarity: "common",
+    },
+    {
+      id: "profile_sniper",
+      name: "Снайпер",
+      description: "Дальняя треугольная зона, редкие выстрелы.",
+      profile: "sniper",
+      icon: "△",
+      short: "Снайп",
+      color: "#5da8ff",
+      rarity: "rare",
+    },
+    {
+      id: "profile_shotgun",
+      name: "Дробовик",
+      description: "Широкая ближняя зона и дробь.",
+      profile: "shotgun",
+      icon: "▭",
+      short: "Дробь",
+      color: "#5da8ff",
+      rarity: "rare",
+    },
+  ];
+}
+
+function renderGunStrip(container) {
+  if (!container) return;
+  container.innerHTML = "";
+  world.guns.forEach((gun, idx) => {
+    if (!gun.slotUnlocked) return;
+    const card = document.createElement("div");
+    const selected = isGunSelected(idx);
+    card.className = `gun-pill ${selected ? "selected" : ""}`.trim();
+    const status = gun.installed ? "Установлена" : "Слот открыт";
+    const lensPacket = getLensPacketPreview();
+    const combat = composeCombatStats(gun, lensPacket);
+    const profiles = profileOptions();
+    card.innerHTML = [
+      `<div class="gun-pill-title">${gun.name} • ${status}</div>`,
+      `<table class="gun-pill-table">`,
+      `<tr><td>Профиль</td><td>${zoneName(gun)}</td></tr>`,
+      `<tr><td>Скорость</td><td>${gun.fireRate.toFixed(2)}/с</td></tr>`,
+      `<tr><td>Урон</td><td>${gun.baseDamage + gun.flatDamage} × ${gun.multiplier.toFixed(2)}</td></tr>`,
+      `<tr><td>Дальность</td><td>${gun.range.toFixed(0)}</td></tr>`,
+      `<tr><td>Энергия</td><td>x${combat.energyScale.toFixed(2)}</td></tr>`,
+      `<tr><td>Магия</td><td>x${combat.magicScale.toFixed(2)}</td></tr>`,
+      `<tr><td>Статусы</td><td>🔥${(combat.burnChance * 100).toFixed(0)} ❄${(combat.iceChance * 100).toFixed(0)} ⚡${(combat.lightningChance * 100).toFixed(0)}</td></tr>`,
+      `</table>`,
+      `<div class="gun-pill-profile-row">`,
+      ...profiles.map((profile) => {
+        const active = gun.profile === profile.profile;
+        return `<button class="profile-icon-btn js-profile-select ${active ? "active" : ""}" data-idx="${idx}" data-profile="${profile.profile}" data-tooltip="${profile.name}: ${profile.description}" ${!gun.installed ? "disabled" : ""}>${profile.icon}</button>`;
+      }),
+      `</div>`,
+      `<div class="gun-pill-actions">`,
+      `<button class="energy-toggle-btn js-slot ${gun.installed ? "active" : ""}" data-idx="${idx}" data-tooltip="${gun.installed ? "Отключить подачу энергии" : "Включить подачу энергии"}">${gun.installed ? "⏻" : "◌"}</button>`,
+      `</div>`,
+    ].join("");
+    container.append(card);
+  });
+}
+
+function renderModalTargetStrip() {
+  if (!ui.modalGunStrip) return;
+  const target = state.modalTargetPick;
+  if (!target) {
+    ui.modalGunStrip.innerHTML = "";
+    ui.modalGunStrip.classList.add("hidden");
+    return;
+  }
+  ui.modalGunStrip.classList.remove("hidden");
+  ui.modalGunStrip.innerHTML = "";
+  const allowed = new Set(target.gunIndices);
+  world.guns.forEach((gun, idx) => {
+    if (!gun.slotUnlocked) return;
+    const card = document.createElement("div");
+    const selected = isGunSelected(idx);
+    const canPick = allowed.has(idx);
+    card.className = `gun-pill ${selected ? "selected" : ""} ${canPick ? "pickable" : ""}`.trim();
+    card.dataset.idx = String(idx);
+    const lensPacket = getLensPacketPreview();
+    const combat = composeCombatStats(gun, lensPacket);
+    card.innerHTML = [
+      `<div class="gun-pill-title">${gun.name}</div>`,
+      `<table class="gun-pill-table">`,
+      `<tr><td>Профиль</td><td>${zoneName(gun)}</td></tr>`,
+      `<tr><td>Скорость</td><td>${gun.fireRate.toFixed(2)}/с</td></tr>`,
+      `<tr><td>Урон</td><td>${gun.baseDamage + gun.flatDamage} × ${gun.multiplier.toFixed(2)}</td></tr>`,
+      `<tr><td>Дальность</td><td>${gun.range.toFixed(0)}</td></tr>`,
+      `<tr><td>Энергия</td><td>x${combat.energyScale.toFixed(2)}</td></tr>`,
+      `</table>`,
+      `<div class="gun-pill-actions">${canPick ? "<span>Кликни, чтобы применить баф</span>" : "<span>Недоступно</span>"}</div>`,
+    ].join("");
+    ui.modalGunStrip.append(card);
   });
 }
 
@@ -818,6 +1048,9 @@ function updateHud() {
   ui.restartBtn.classList.toggle("hidden", !state.gameOver);
   if (ui.pauseBtn) ui.pauseBtn.textContent = state.userPaused ? "Продолжить" : "Пауза";
   if (ui.threeModeBtn) ui.threeModeBtn.textContent = state.threeMode ? "2D режим" : "3D режим";
+  if (state.selectedGunIndex >= 0 && !world.guns[state.selectedGunIndex].installed) {
+    setSelectedGuns([]);
+  }
 
   ui.lensBuffs.innerHTML = "";
   if (state.lens.buffNames.length === 0) {
@@ -835,7 +1068,7 @@ function updateHud() {
   }
 
   if (state.selectedGunIndices.length === 0) {
-    ui.selectedGunInfo.textContent = "Кликни по пушке. Shift+клик: мультивыбор. Перетаскивание двигает выбранные башни вместе.";
+    ui.selectedGunInfo.textContent = "Кликни по установленной пушке (или Профиль в списке). Shift+клик: мультивыбор.";
   } else if (state.selectedGunIndices.length > 1) {
     const names = state.selectedGunIndices.map((idx) => world.guns[idx].name).join(", ");
     ui.selectedGunInfo.innerHTML = [
@@ -861,20 +1094,28 @@ function updateHud() {
       `<div>Лёд (итог): ${(combat.iceChance * 100).toFixed(0)}% | Лужа: ${(combat.oilChance * 100).toFixed(0)}%</div>`,
       `<div>Молния (итог): ${(combat.lightningChance * 100).toFixed(0)}% (${combat.lightningChains} скач., R${combat.lightningRadius.toFixed(0)})</div>`,
       `<div>Маг. множитель (итог): x${combat.magicScale.toFixed(2)}</div>`,
-      `<div>Энергия: x${gun.energyMultiplier.toFixed(2)} · Линза: x${(lensPacket.energyMultiplier || 1).toFixed(2)} = x${combat.energyScale.toFixed(2)}</div>`,
+      `<div>Энергия: поток x${combat.sharedEnergyScale.toFixed(2)} · пушка x${gun.energyMultiplier.toFixed(2)} · линза x${(lensPacket.energyMultiplier || 1).toFixed(2)} = x${combat.energyScale.toFixed(2)}</div>`,
       `<div>Звенья: ${buffedLinks}/${totalLinks} (макс ${MAX_LINKS_PER_GUN})</div>`,
       `<div>Апгрейды: ${gunUpgradesText(gun)}</div>`,
     ].join("");
   }
+  renderGunStrip(ui.gunStrip);
 }
 
 function openCardModal(cards, hint, onPick) {
   state.pausedByCards = true;
+  state.modalTargetPick = null;
   ui.modal.classList.remove("hidden");
+  ui.modal.classList.remove("modal-open");
   if (ui.cardModalTitle) ui.cardModalTitle.textContent = `Выбери 1 из ${cards.length} карточек`;
   ui.cardHint.textContent = hint;
   ui.cardChoices.innerHTML = "";
   ui.targetChoices.innerHTML = "";
+  if (ui.targetChoices) ui.targetChoices.style.display = "none";
+  ui.modalGunStrip?.classList.add("hidden");
+  ui.modalGunStrip?.classList.remove("strip-open");
+  if (ui.modalGunStrip) ui.modalGunStrip.innerHTML = "";
+  if (ui.modalGunStrip) ui.modalGunStrip.classList.remove("hidden");
   cards.forEach((card, idx) => {
     const btn = document.createElement("button");
     btn.className = "card-btn game-card";
@@ -894,59 +1135,33 @@ function openCardModal(cards, hint, onPick) {
     btn.onclick = () => onPick(card);
     ui.cardChoices.append(btn);
   });
+  animateModalOpen();
   animateFan(ui.cardChoices);
 }
 
 function closeCardModal() {
   state.pausedByCards = false;
+  state.modalTargetPick = null;
+  ui.modal.classList.remove("modal-open");
   ui.modal.classList.add("hidden");
   ui.cardChoices.innerHTML = "";
   ui.targetChoices.innerHTML = "";
+  if (ui.modalGunStrip) {
+    ui.modalGunStrip.innerHTML = "";
+    ui.modalGunStrip.classList.remove("strip-open");
+  }
   updateHud();
   maybeOfferQueuedRewards();
 }
 
 function showTargetPick(title, guns, onPick) {
   ui.cardHint.textContent = title;
-  ui.targetChoices.innerHTML = "";
-  const lensPacket = getLensPacketPreview();
-  guns.forEach((gun, idx) => {
-    const combat = composeCombatStats(gun, lensPacket);
-    const buffedLinks = gun.links.filter((link) => link.isBuffed()).length;
-    const btn = document.createElement("button");
-    btn.className = "target-btn game-card gun-card-choice";
-    btn.style.setProperty("--card-accent", "#7cf1c5");
-    btn.style.setProperty("--i", String(idx));
-    btn.style.setProperty("--count", String(guns.length));
-    btn.style.setProperty(
-      "--art-bg",
-      cardArtDataUri({ id: `gun_${zoneName(gun).toLowerCase()}`, color: "#7cf1c5" })
-    );
-    btn.innerHTML = [
-      `<div class="game-card-top">`,
-      `<span class="game-card-icon">🛡</span>`,
-      `<span class="game-card-type">ПУШКА</span>`,
-      `<strong class="game-card-title">${gun.name}</strong>`,
-      `</div>`,
-      `<div class="game-card-art"></div>`,
-      `<div class="game-card-body">`,
-      `💥 ${gun.baseDamage}+${gun.flatDamage}<br/>`,
-      `✖ ${gun.multiplier.toFixed(2)} | ⚡ ${gun.fireRate.toFixed(2)}/с<br/>`,
-      `🎯 ${zoneName(gun)} | 📏 ${gun.range.toFixed(0)}<br/>`,
-      `🔥 ${(combat.burnChance * 100).toFixed(0)}% | ❄ ${(combat.iceChance * 100).toFixed(0)}% | 🛢 ${(combat.oilChance * 100).toFixed(0)}%<br/>`,
-      `⚡ ${(combat.lightningChance * 100).toFixed(0)}% (${combat.lightningChains}) R${combat.lightningRadius.toFixed(0)} | ✨ x${combat.magicScale.toFixed(2)}<br/>`,
-      `⚛ Энергия: x${combat.energyScale.toFixed(2)}<br/>`,
-      `🔗 ${buffedLinks}/${MAX_LINKS_PER_GUN}<br/>`,
-      `Апгрейды: ${gunUpgradesText(gun)}`,
-      `</div>`,
-    ].join("");
-    btn.onclick = () => {
-      onPick(gun);
-      closeCardModal();
-    };
-    ui.targetChoices.append(btn);
-  });
-  animateFan(ui.targetChoices);
+  state.modalTargetPick = {
+    gunIndices: guns.map((g) => world.guns.indexOf(g)).filter((idx) => idx >= 0),
+    onPick,
+  };
+  renderModalTargetStrip();
+  animateModalGunStrip();
 }
 
 function animateFan(container) {
@@ -954,6 +1169,25 @@ function animateFan(container) {
   requestAnimationFrame(() => {
     requestAnimationFrame(() => {
       container.classList.add("fan-open");
+    });
+  });
+}
+
+function animateModalOpen() {
+  if (!ui.modal) return;
+  requestAnimationFrame(() => {
+    requestAnimationFrame(() => {
+      ui.modal.classList.add("modal-open");
+    });
+  });
+}
+
+function animateModalGunStrip() {
+  if (!ui.modalGunStrip) return;
+  ui.modalGunStrip.classList.remove("strip-open");
+  requestAnimationFrame(() => {
+    requestAnimationFrame(() => {
+      ui.modalGunStrip.classList.add("strip-open");
     });
   });
 }
@@ -978,9 +1212,8 @@ function offerRegularCards() {
   }
   openCardModal(offer, "Обычная награда: выбери 1 карточку.", (card) => {
     const targets = world.guns.filter((g) => {
-      if (!g.hasFreeLink()) return false;
-      if (card.effect.attackProfile) return !g.hasAttackProfile();
-      return true;
+      if (!g.slotUnlocked) return false;
+      return g.hasFreeLink();
     });
     if (targets.length === 0) {
       state.pendingRegularCardRewards = Math.max(0, state.pendingRegularCardRewards - 1);
@@ -1002,7 +1235,7 @@ function offerRegularCards() {
 }
 
 function offerBossLensCard() {
-  const offer = randomPick(LENS_CARDS, 2);
+  const offer = randomPick(LENS_CARDS, 3);
   openCardModal(
     offer,
     "Редкая награда за босса: улучшение ЛИНЗЫ (супер редкое). Выбери 1.",
@@ -1050,6 +1283,8 @@ function spawnEnemy() {
     world.wall.cx,
     world.wall.cy,
     world.wall.r,
+    world.monsterYMin,
+    world.monsterYMax,
     state.enemyPowerScale,
     durabilityScale
   );
@@ -1204,20 +1439,29 @@ function pickGunTarget(gun) {
 
 function fireShotgun(gun, baseDamage, combat) {
   const pellets = gun.shotgunPellets || 5;
-  const spread = gun.shotgunSpread || 120;
+  const spread = ((gun.shotgunSpread || 120) * Math.PI) / 180;
   for (let i = 0; i < pellets; i += 1) {
-    const lane = pellets === 1 ? 0 : i / (pellets - 1);
-    const yLine = gun.y - spread / 2 + spread * lane;
-    const xEnd = gun.x + gun.range;
+    const lane = pellets === 1 ? 0.5 : i / (pellets - 1);
+    const angle = -spread / 2 + spread * lane;
+    const dirX = Math.cos(angle);
+    const dirY = Math.sin(angle);
+    const xEnd = gun.x + dirX * gun.range;
+    const yEnd = gun.y + dirY * gun.range;
 
     let hit = null;
-    let bestX = Infinity;
+    let bestT = Infinity;
     for (const enemy of world.enemies) {
       if (!enemy.alive()) continue;
-      if (enemy.x < gun.x || enemy.x > xEnd) continue;
-      if (Math.abs(enemy.y - yLine) > 18) continue;
-      if (enemy.x < bestX) {
-        bestX = enemy.x;
+      const relX = enemy.x - gun.x;
+      const relY = enemy.y - gun.y;
+      const t = relX * dirX + relY * dirY;
+      if (t < 0 || t > gun.range) continue;
+      const closestX = gun.x + dirX * t;
+      const closestY = gun.y + dirY * t;
+      const miss = Math.hypot(enemy.x - closestX, enemy.y - closestY);
+      if (miss > enemy.radius + 8) continue;
+      if (t < bestT) {
+        bestT = t;
         hit = enemy;
       }
     }
@@ -1237,7 +1481,7 @@ function fireShotgun(gun, baseDamage, combat) {
         x1: gun.x,
         y1: gun.y,
         x2: xEnd,
-        y2: yLine,
+        y2: yEnd,
         crit: false,
         life: 0.05,
       });
@@ -1245,9 +1489,50 @@ function fireShotgun(gun, baseDamage, combat) {
   }
 }
 
+function fireSniper(gun, baseDamage, target, combat, crit) {
+  const shotDamage = baseDamage * 1.3;
+  const dirXRaw = target.x - gun.x;
+  const dirYRaw = target.y - gun.y;
+  const len = Math.max(1, Math.hypot(dirXRaw, dirYRaw));
+  const dirX = dirXRaw / len;
+  const dirY = dirYRaw / len;
+  const maxDx = Math.max(1, world.width - gun.x);
+  const tToEdge = maxDx / Math.max(0.0001, dirX);
+  const endX = gun.x + dirX * tToEdge;
+  const endY = gun.y + dirY * tToEdge;
+
+  const pierced = [];
+  for (const enemy of world.enemies) {
+    if (!enemy.alive()) continue;
+    if (!enemyInGunZone(gun, enemy)) continue;
+    const relX = enemy.x - gun.x;
+    const relY = enemy.y - gun.y;
+    const t = relX * dirX + relY * dirY;
+    if (t < 0 || t > tToEdge) continue;
+    const closestX = gun.x + dirX * t;
+    const closestY = gun.y + dirY * t;
+    const miss = Math.hypot(enemy.x - closestX, enemy.y - closestY);
+    if (miss > enemy.radius + 10) continue;
+    pierced.push({ enemy, t });
+  }
+
+  pierced.sort((a, b) => a.t - b.t);
+  pierced.forEach(({ enemy }) => applyHit(enemy, shotDamage, combat));
+  world.beams.push({
+    x1: gun.x,
+    y1: gun.y,
+    x2: endX,
+    y2: endY,
+    crit,
+    life: 0.13,
+  });
+}
+
 function handleShooting(dt) {
-  const packets = state.lens.distribute(state.engine.produce(), world.guns.length);
-  world.guns.forEach((gun, idx) => {
+  const installed = getInstalledGuns();
+  if (installed.length === 0) return;
+  const packets = state.lens.distribute(state.engine.produce(), installed.length);
+  installed.forEach((gun, idx) => {
     if (gun.cooldown > 0) gun.cooldown -= dt;
     if (gun.cooldown > 0) return;
 
@@ -1259,14 +1544,15 @@ function handleShooting(dt) {
     const crit = Math.random() < packet.critChance;
     const critMultiplier = crit ? packet.critMultiplier : 1;
     const combat = composeCombatStats(gun, packet);
-    const damage =
-      (gun.baseDamage + packet.energy + gun.flatDamage) *
-      gun.multiplier *
-      critMultiplier *
-      combat.energyScale;
+    const damage = (gun.baseDamage + gun.flatDamage) * gun.multiplier * critMultiplier * combat.energyScale;
 
     if (gun.attackMode === "shotgun") {
       fireShotgun(gun, damage, combat);
+      return;
+    }
+
+    if (gun.attackMode === "sniper") {
+      fireSniper(gun, damage, target, combat, crit);
       return;
     }
 
@@ -1327,6 +1613,7 @@ function clearDeadEnemies() {
   if (deadBosses.length > 0) {
     state.enemyPowerScale *= ENEMY_POWER_PER_BOSS;
     state.pendingBossLensRewards += deadBosses.length;
+    unlockNextGunSlot(deadBosses.length);
     logLine("Босс уничтожен. Выдано редкое улучшение линзы.");
     logLine(`Сила монстров выросла на 15% (x${state.enemyPowerScale.toFixed(2)}).`);
   }
@@ -1464,7 +1751,7 @@ function drawEngineAndLens(now) {
   ctx.lineTo(l.x, l.y);
   ctx.stroke();
 
-  world.guns.forEach((gun) => {
+  getInstalledGuns().forEach((gun) => {
     ctx.strokeStyle = `rgba(124,220,255,${0.34 + pulse * 0.34})`;
     ctx.lineWidth = 2 + pulse * 1.3;
     ctx.beginPath();
@@ -1476,6 +1763,7 @@ function drawEngineAndLens(now) {
 
 function drawGuns() {
   world.guns.forEach((gun, idx) => {
+    if (!gun.installed) return;
     const selected = isGunSelected(idx);
 
     ctx.fillStyle = selected ? "#2e6e88" : "#1e4362";
@@ -2079,11 +2367,20 @@ function syncThreeWorld(now) {
   world.guns.forEach((gun, idx) => {
     const mesh = threeView.gunMeshes[idx];
     if (!mesh) return;
+    const line = threeView.lensGunLines[idx];
+    const rod = threeView.lensGunBeams[idx];
+    if (!gun.installed) {
+      mesh.visible = false;
+      if (line) line.visible = false;
+      if (rod) rod.visible = false;
+      return;
+    }
+    mesh.visible = true;
+    if (line) line.visible = true;
+    if (rod) rod.visible = true;
     const p = worldToThree(gun.x, gun.y, 10);
     mesh.position.copy(p);
-    const line = threeView.lensGunLines[idx];
     if (line) line.geometry.setFromPoints([lPos.clone(), p.clone()]);
-    const rod = threeView.lensGunBeams[idx];
     if (rod) placeBeamRod(rod, lPos, p);
     const pulse = isGunSelected(idx) ? 1.2 : 1;
     mesh.scale.set(pulse, pulse, pulse);
@@ -2097,7 +2394,7 @@ function syncThreeWorld(now) {
   });
 
   clearThreeGroup(threeView.zoneGroup);
-  for (const gun of world.guns) {
+  for (const gun of getInstalledGuns()) {
     const points = [];
     if (gun.attackMode === "sniper") {
       const xEnd = world.width;
@@ -2395,6 +2692,7 @@ function setupCanvasForDpr() {
 
 function update(dt) {
   if (state.pausedByCards || state.userPaused || state.gameOver) return;
+  updateKeyboardGunMove(dt);
   handleShooting(dt);
   updateEnemies(dt);
   clearDeadEnemies();
@@ -2432,6 +2730,7 @@ function canvasToWorld(event) {
 function pickGunIndexAt(x, y) {
   let hit = -1;
   world.guns.forEach((gun, idx) => {
+    if (!gun.installed) return;
     if (Math.hypot(gun.x - x, gun.y - y) <= 24) hit = idx;
   });
   return hit;
@@ -2496,10 +2795,26 @@ function onCanvasMouseMove(event) {
   if (state.draggingGroupIndices.length === 0) return;
   const { x, y } = canvasToWorld(event);
   applyGroupDrag(pointToWallAngle(x, y));
+  state.skipNextCanvasClick = true;
 }
 
 function onCanvasMouseUp() {
   endGroupDrag();
+}
+
+function onCanvasClick(event) {
+  if (event.shiftKey) return;
+  if (state.skipNextCanvasClick) {
+    state.skipNextCanvasClick = false;
+    return;
+  }
+  const { x, y } = canvasToWorld(event);
+  const hitIdx = pickGunIndexAt(x, y);
+  if (hitIdx < 0) return;
+  const gun = world.guns[hitIdx];
+  if (!gun?.installed) return;
+  setSelectedGuns([hitIdx], hitIdx);
+  updateHud();
 }
 
 function getTouchPoint(touchEvent) {
@@ -2537,22 +2852,141 @@ function onCanvasTouchEnd(event) {
   endGroupDrag();
 }
 
+function onGunStripPointerDown(event) {
+  const profileBtn = event.target.closest(".js-profile-select");
+  if (profileBtn && ui.gunStrip?.contains(profileBtn)) {
+    event.preventDefault();
+    const idx = Number(profileBtn.getAttribute("data-idx"));
+    const profile = profileBtn.getAttribute("data-profile");
+    const gun = world.guns[idx];
+    if (!gun?.installed || !profile) return;
+    gun.chooseAttackProfile(profile);
+    const profileMeta = profileOptions().find((item) => item.profile === profile);
+    logLine(`${gun.name}: профиль "${profileMeta?.name || profile}".`);
+    updateHud();
+    return;
+  }
+
+  const slotBtn = event.target.closest(".js-slot");
+  if (slotBtn && ui.gunStrip?.contains(slotBtn)) {
+    event.preventDefault();
+    const idx = Number(slotBtn.getAttribute("data-idx"));
+    const gun = world.guns[idx];
+    if (!gun) return;
+    if (gun.installed) removeGun(idx);
+    else installGun(idx);
+    updateHud();
+  }
+}
+
+function onModalGunStripPointerDown(event) {
+  const pickCard = event.target.closest(".gun-pill.pickable");
+  if (pickCard && ui.modalGunStrip?.contains(pickCard)) {
+    event.preventDefault();
+    const idx = Number(pickCard.dataset.idx);
+    const target = state.modalTargetPick;
+    const gun = world.guns[idx];
+    if (!target || !gun) return;
+    if (!target.gunIndices.includes(idx)) return;
+    target.onPick(gun);
+    closeCardModal();
+  }
+}
+
+function updateKeyboardGunMove(dt) {
+  if (state.draggingGroupIndices.length > 0) return;
+  const idx = state.selectedGunIndex;
+  const gun = idx >= 0 ? world.guns[idx] : null;
+  if (!gun?.installed) return;
+
+  const direction = (state.moveGunDownHeld ? 1 : 0) - (state.moveGunUpHeld ? 1 : 0);
+  if (direction === 0) return;
+
+  const angularSpeed = 1.55;
+  setGunOnWallByAngle(gun, (gun.wallAngle ?? pointToWallAngle(gun.x, gun.y)) + direction * angularSpeed * dt);
+}
+
+function onWindowKeyDown(event) {
+  if (event.defaultPrevented) return;
+  if (state.gameOver || state.pausedByCards) return;
+  const target = event.target;
+  if (target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable)) return;
+
+  if (event.code === "Tab") {
+    event.preventDefault();
+    cycleSelectedGun(event.shiftKey ? -1 : 1);
+    updateHud();
+    return;
+  }
+
+  if (event.code === "KeyW") {
+    event.preventDefault();
+    state.moveGunUpHeld = true;
+    return;
+  }
+
+  if (event.code === "KeyS") {
+    event.preventDefault();
+    state.moveGunDownHeld = true;
+    return;
+  }
+
+  let profile = null;
+  if (event.code === "Digit1" || event.code === "Numpad1") profile = "circular";
+  if (event.code === "Digit2" || event.code === "Numpad2") profile = "sniper";
+  if (event.code === "Digit3" || event.code === "Numpad3") profile = "shotgun";
+  if (!profile) return;
+
+  const idx = state.selectedGunIndex;
+  const gun = idx >= 0 ? world.guns[idx] : null;
+  if (!gun?.installed) return;
+  if (gun.profile === profile) return;
+
+  event.preventDefault();
+  gun.chooseAttackProfile(profile);
+  const profileMeta = profileOptions().find((item) => item.profile === profile);
+  logLine(`${gun.name}: профиль "${profileMeta?.name || profile}" (клавиша ${event.code.endsWith("1") ? "1" : event.code.endsWith("2") ? "2" : "3"}).`);
+  updateHud();
+}
+
+function onWindowKeyUp(event) {
+  if (event.code === "KeyW") {
+    state.moveGunUpHeld = false;
+    return;
+  }
+  if (event.code === "KeyS") {
+    state.moveGunDownHeld = false;
+  }
+}
+
 function init() {
-  placeInitialGunsOnWall();
+  initializeGunSlots();
   setupCanvasForDpr();
   window.addEventListener("resize", setupCanvasForDpr);
+  window.addEventListener("keydown", onWindowKeyDown);
+  window.addEventListener("keyup", onWindowKeyUp);
   canvas.addEventListener("mousedown", onCanvasMouseDown);
   canvas.addEventListener("mousemove", onCanvasMouseMove);
   canvas.addEventListener("mouseup", onCanvasMouseUp);
   canvas.addEventListener("mouseleave", onCanvasMouseUp);
   window.addEventListener("mouseup", onCanvasMouseUp);
+  canvas.addEventListener("click", onCanvasClick);
   canvas.addEventListener("touchstart", onCanvasTouchStart, { passive: false });
   canvas.addEventListener("touchmove", onCanvasTouchMove, { passive: false });
   canvas.addEventListener("touchend", onCanvasTouchEnd, { passive: false });
   canvas.addEventListener("touchcancel", onCanvasTouchEnd, { passive: false });
+  if (ui.gunStrip) ui.gunStrip.addEventListener("pointerdown", onGunStripPointerDown);
+  if (ui.modalGunStrip) ui.modalGunStrip.addEventListener("pointerdown", onModalGunStripPointerDown);
   ui.restartBtn.addEventListener("click", () => {
     window.location.reload();
   });
+  if (ui.helpBtn) ui.helpBtn.addEventListener("click", openHelpModal);
+  if (ui.helpCloseBtn) ui.helpCloseBtn.addEventListener("click", closeHelpModal);
+  if (ui.helpModal) {
+    ui.helpModal.addEventListener("click", (event) => {
+      if (event.target === ui.helpModal) closeHelpModal();
+    });
+  }
   if (ui.cardsInfoBtn) ui.cardsInfoBtn.addEventListener("click", openCardsInfoModal);
   if (ui.cardsInfoCloseBtn) ui.cardsInfoCloseBtn.addEventListener("click", closeCardsInfoModal);
   if (ui.cardsInfoModal) {
