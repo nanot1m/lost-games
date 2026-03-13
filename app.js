@@ -8,6 +8,323 @@ class Engine {
   }
 }
 
+class SynthAudio {
+  constructor() {
+    this.ctx = null;
+    this.master = null;
+    this.musicMaster = null;
+    this.enabled = true;
+    this.lastPlayed = new Map();
+    this.musicEnabled = true;
+    this.musicInterval = null;
+    this.musicTempo = 112;
+    this.musicStep = 0;
+    this.musicNextTime = 0;
+  }
+
+  unlock() {
+    if (!this.enabled) return;
+    const AudioCtx = window.AudioContext || window.webkitAudioContext;
+    if (!AudioCtx) return;
+    if (!this.ctx) {
+      this.ctx = new AudioCtx();
+      this.master = this.ctx.createGain();
+      this.master.gain.value = 0.18;
+      this.master.connect(this.ctx.destination);
+      this.musicMaster = this.ctx.createGain();
+      this.musicMaster.gain.value = 0.34;
+      this.musicMaster.connect(this.master);
+    }
+    if (this.ctx.state === "suspended") this.ctx.resume();
+  }
+
+  canPlay(key, minGap = 0.02) {
+    const now = performance.now() / 1000;
+    const prev = this.lastPlayed.get(key) || 0;
+    if (now - prev < minGap) return false;
+    this.lastPlayed.set(key, now);
+    return true;
+  }
+
+  tone({
+    type = "sine",
+    frequency = 440,
+    frequencyEnd = frequency,
+    attack = 0.003,
+    hold = 0.02,
+    release = 0.08,
+    gain = 0.15,
+    filterType = "lowpass",
+    filterFrequency = 2200,
+    q = 0.001,
+    pan = 0,
+    time = null,
+    destination = null,
+  }) {
+    if (!this.enabled) return;
+    this.unlock();
+    if (!this.ctx || !this.master) return;
+    const now = time ?? this.ctx.currentTime;
+    const osc = this.ctx.createOscillator();
+    const env = this.ctx.createGain();
+    const filter = this.ctx.createBiquadFilter();
+    const panner = this.ctx.createStereoPanner();
+    osc.type = type;
+    osc.frequency.setValueAtTime(frequency, now);
+    osc.frequency.exponentialRampToValueAtTime(Math.max(20, frequencyEnd), now + attack + hold + release);
+    filter.type = filterType;
+    filter.frequency.setValueAtTime(filterFrequency, now);
+    filter.Q.value = q;
+    panner.pan.setValueAtTime(Math.max(-1, Math.min(1, pan)), now);
+    env.gain.setValueAtTime(0.0001, now);
+    env.gain.exponentialRampToValueAtTime(Math.max(0.0001, gain), now + attack);
+    env.gain.exponentialRampToValueAtTime(Math.max(0.0001, gain * 0.78), now + attack + hold);
+    env.gain.exponentialRampToValueAtTime(0.0001, now + attack + hold + release);
+    osc.connect(filter);
+    filter.connect(env);
+    env.connect(panner);
+    panner.connect(destination || this.master);
+    osc.start(now);
+    osc.stop(now + attack + hold + release + 0.02);
+  }
+
+  noise({
+    attack = 0.002,
+    hold = 0.02,
+    release = 0.09,
+    gain = 0.1,
+    filterType = "bandpass",
+    filterFrequency = 900,
+    q = 0.8,
+    pan = 0,
+    time = null,
+    destination = null,
+  }) {
+    if (!this.enabled) return;
+    this.unlock();
+    if (!this.ctx || !this.master) return;
+    const now = time ?? this.ctx.currentTime;
+    const buffer = this.ctx.createBuffer(1, Math.floor(this.ctx.sampleRate * 0.2), this.ctx.sampleRate);
+    const data = buffer.getChannelData(0);
+    for (let i = 0; i < data.length; i += 1) data[i] = (Math.random() * 2 - 1) * (1 - i / data.length);
+    const src = this.ctx.createBufferSource();
+    src.buffer = buffer;
+    const filter = this.ctx.createBiquadFilter();
+    filter.type = filterType;
+    filter.frequency.setValueAtTime(filterFrequency, now);
+    filter.Q.value = q;
+    const env = this.ctx.createGain();
+    const panner = this.ctx.createStereoPanner();
+    panner.pan.setValueAtTime(Math.max(-1, Math.min(1, pan)), now);
+    env.gain.setValueAtTime(0.0001, now);
+    env.gain.exponentialRampToValueAtTime(Math.max(0.0001, gain), now + attack);
+    env.gain.exponentialRampToValueAtTime(Math.max(0.0001, gain * 0.6), now + attack + hold);
+    env.gain.exponentialRampToValueAtTime(0.0001, now + attack + hold + release);
+    src.connect(filter);
+    filter.connect(env);
+    env.connect(panner);
+    panner.connect(destination || this.master);
+    src.start(now);
+    src.stop(now + attack + hold + release + 0.02);
+  }
+
+  setMusicEnabled(enabled) {
+    this.musicEnabled = enabled;
+    if (!enabled) {
+      this.stopMusic();
+      return;
+    }
+    this.unlock();
+    this.startMusic();
+  }
+
+  startMusic() {
+    if (!this.musicEnabled) return;
+    this.unlock();
+    if (!this.ctx || !this.musicMaster || this.musicInterval) return;
+    this.musicStep = 0;
+    this.musicNextTime = this.ctx.currentTime + 0.08;
+    this.musicInterval = window.setInterval(() => this.scheduleMusic(), 100);
+  }
+
+  stopMusic() {
+    if (this.musicInterval) {
+      window.clearInterval(this.musicInterval);
+      this.musicInterval = null;
+    }
+  }
+
+  scheduleMusic() {
+    if (!this.musicEnabled || !this.ctx || !this.musicMaster) return;
+    if (this.ctx.state === "suspended") return;
+    const lookAhead = 0.28;
+    while (this.musicNextTime < this.ctx.currentTime + lookAhead) {
+      this.scheduleMusicStep(this.musicStep, this.musicNextTime);
+      this.musicStep = (this.musicStep + 1) % 16;
+      this.musicNextTime += 60 / this.musicTempo / 4;
+    }
+  }
+
+  scheduleMusicStep(step, time) {
+    const kick = [0, 4, 8, 12].includes(step);
+    const hat = step % 2 === 0;
+    const bassStep = step % 4 === 0;
+    const padStep = step === 0 || step === 8;
+
+    if (kick) {
+      this.tone({
+        type: "sine",
+        frequency: 74,
+        frequencyEnd: 36,
+        attack: 0.002,
+        hold: 0.015,
+        release: 0.18,
+        gain: 0.16,
+        filterFrequency: 260,
+        time,
+        destination: this.musicMaster,
+      });
+      this.noise({
+        attack: 0.001,
+        hold: 0.008,
+        release: 0.05,
+        gain: 0.025,
+        filterType: "lowpass",
+        filterFrequency: 420,
+        time,
+        destination: this.musicMaster,
+      });
+    }
+
+    if (hat) {
+      this.noise({
+        attack: 0.001,
+        hold: 0.004,
+        release: 0.035,
+        gain: 0.018,
+        filterType: "highpass",
+        filterFrequency: 5200,
+        q: 0.8,
+        pan: step % 4 === 0 ? -0.08 : 0.08,
+        time,
+        destination: this.musicMaster,
+      });
+    }
+
+    if (bassStep) {
+      const notes = [55, 55, 65.4, 49];
+      const note = notes[(step / 4) % notes.length];
+      this.tone({
+        type: "sawtooth",
+        frequency: note,
+        frequencyEnd: note * 0.92,
+        attack: 0.01,
+        hold: 0.09,
+        release: 0.22,
+        gain: 0.05,
+        filterType: "lowpass",
+        filterFrequency: 460,
+        q: 0.7,
+        time,
+        destination: this.musicMaster,
+      });
+    }
+
+    if (padStep) {
+      this.tone({
+        type: "triangle",
+        frequency: step === 0 ? 220 : 246.94,
+        frequencyEnd: step === 0 ? 246.94 : 293.66,
+        attack: 0.12,
+        hold: 0.28,
+        release: 0.9,
+        gain: 0.028,
+        filterType: "lowpass",
+        filterFrequency: 1200,
+        pan: step === 0 ? -0.16 : 0.16,
+        time,
+        destination: this.musicMaster,
+      });
+      this.tone({
+        type: "sine",
+        frequency: step === 0 ? 440 : 493.88,
+        frequencyEnd: step === 0 ? 493.88 : 587.32,
+        attack: 0.14,
+        hold: 0.22,
+        release: 0.86,
+        gain: 0.018,
+        filterType: "bandpass",
+        filterFrequency: 1400,
+        q: 0.5,
+        pan: step === 0 ? 0.12 : -0.12,
+        time,
+        destination: this.musicMaster,
+      });
+    }
+  }
+
+  uiTap() {
+    if (!this.canPlay("uiTap", 0.04)) return;
+    this.tone({ type: "triangle", frequency: 540, frequencyEnd: 760, hold: 0.014, release: 0.08, gain: 0.05, filterFrequency: 2400, pan: -0.05 });
+  }
+
+  cardOpen() {
+    if (!this.canPlay("cardOpen", 0.08)) return;
+    this.tone({ type: "sine", frequency: 320, frequencyEnd: 540, hold: 0.06, release: 0.22, gain: 0.07, filterFrequency: 1600 });
+    this.tone({ type: "triangle", frequency: 640, frequencyEnd: 980, attack: 0.01, hold: 0.05, release: 0.18, gain: 0.045, filterFrequency: 3000, pan: 0.15 });
+  }
+
+  cardPick() {
+    if (!this.canPlay("cardPick", 0.06)) return;
+    this.tone({ type: "sine", frequency: 520, frequencyEnd: 860, hold: 0.02, release: 0.12, gain: 0.06, filterFrequency: 2400 });
+  }
+
+  shotCircular() {
+    if (!this.canPlay("shotCircular", 0.03)) return;
+    this.tone({ type: "triangle", frequency: 420, frequencyEnd: 280, hold: 0.012, release: 0.08, gain: 0.045, filterFrequency: 1800 });
+  }
+
+  shotSniper() {
+    if (!this.canPlay("shotSniper", 0.06)) return;
+    this.tone({ type: "sawtooth", frequency: 980, frequencyEnd: 260, hold: 0.03, release: 0.18, gain: 0.07, filterType: "bandpass", filterFrequency: 1200, q: 0.7 });
+    this.noise({ attack: 0.001, hold: 0.008, release: 0.06, gain: 0.03, filterType: "highpass", filterFrequency: 2200, pan: 0.1 });
+  }
+
+  shotShotgun() {
+    if (!this.canPlay("shotShotgun", 0.05)) return;
+    this.noise({ attack: 0.001, hold: 0.012, release: 0.08, gain: 0.06, filterType: "bandpass", filterFrequency: 720, q: 1.2 });
+    this.tone({ type: "triangle", frequency: 210, frequencyEnd: 110, hold: 0.01, release: 0.07, gain: 0.035, filterFrequency: 900 });
+  }
+
+  hitWall() {
+    if (!this.canPlay("hitWall", 0.08)) return;
+    this.noise({ attack: 0.001, hold: 0.03, release: 0.18, gain: 0.09, filterType: "bandpass", filterFrequency: 480, q: 0.9 });
+    this.tone({ type: "sine", frequency: 140, frequencyEnd: 70, hold: 0.02, release: 0.22, gain: 0.05, filterFrequency: 500 });
+  }
+
+  enemyDeath(isBoss = false) {
+    if (!this.canPlay(isBoss ? "bossDeath" : "enemyDeath", isBoss ? 0.2 : 0.025)) return;
+    this.tone({ type: "triangle", frequency: isBoss ? 260 : 320, frequencyEnd: isBoss ? 90 : 140, hold: 0.02, release: isBoss ? 0.26 : 0.12, gain: isBoss ? 0.085 : 0.035, filterFrequency: isBoss ? 900 : 1400 });
+    if (isBoss) this.noise({ attack: 0.002, hold: 0.04, release: 0.3, gain: 0.08, filterType: "bandpass", filterFrequency: 460, q: 0.8 });
+  }
+
+  burn() {
+    if (!this.canPlay("burn", 0.05)) return;
+    this.noise({ attack: 0.001, hold: 0.015, release: 0.07, gain: 0.03, filterType: "highpass", filterFrequency: 1500, q: 0.9 });
+  }
+
+  freeze() {
+    if (!this.canPlay("freeze", 0.05)) return;
+    this.tone({ type: "sine", frequency: 920, frequencyEnd: 520, hold: 0.018, release: 0.12, gain: 0.035, filterFrequency: 2600, pan: -0.1 });
+  }
+
+  lightning() {
+    if (!this.canPlay("lightning", 0.04)) return;
+    this.noise({ attack: 0.001, hold: 0.012, release: 0.08, gain: 0.05, filterType: "bandpass", filterFrequency: 1800, q: 1.4, pan: 0.12 });
+    this.tone({ type: "square", frequency: 760, frequencyEnd: 420, hold: 0.01, release: 0.06, gain: 0.03, filterFrequency: 2200 });
+  }
+}
+
 class Lens {
   constructor() {
     this.buffNames = [];
@@ -493,6 +810,8 @@ const ui = {
   targetChoices: document.getElementById("targetChoices"),
   gunStrip: document.getElementById("gunStrip"),
   modalGunStrip: document.getElementById("modalGunStrip"),
+  startOverlay: document.getElementById("startOverlay"),
+  startGameBtn: document.getElementById("startGameBtn"),
   restartBtn: document.getElementById("restartBtn"),
   helpBtn: document.getElementById("helpBtn"),
   helpModal: document.getElementById("helpModal"),
@@ -503,7 +822,13 @@ const ui = {
   cardsInfoCloseBtn: document.getElementById("cardsInfoCloseBtn"),
   pauseBtn: document.getElementById("pauseBtn"),
   threeModeBtn: document.getElementById("threeModeBtn"),
+  soundBtn: document.getElementById("soundBtn"),
+  musicBtn: document.getElementById("musicBtn"),
 };
+
+const audioFx = new SynthAudio();
+const STORAGE_SOUND_KEY = "lost-games-td-sound-enabled";
+const STORAGE_MUSIC_KEY = "lost-games-td-music-enabled";
 
 const world = {
   width: LOGICAL_WIDTH,
@@ -561,11 +886,15 @@ const state = {
   pendingRegularCardRewards: 0,
   pendingBossLensRewards: 0,
   waveRewardGranted: false,
+  rewardModalDelay: 0,
   enemyPowerScale: 1,
   skipNextCanvasClick: false,
   modalTargetPick: null,
   moveGunUpHeld: false,
   moveGunDownHeld: false,
+  soundEnabled: true,
+  musicEnabled: true,
+  started: false,
   lastTime: performance.now(),
 };
 
@@ -574,6 +903,38 @@ function logLine(text) {
   line.className = "log-item";
   line.textContent = text;
   ui.log.prepend(line);
+}
+
+function loadSoundPreference() {
+  try {
+    const raw = window.localStorage.getItem(STORAGE_SOUND_KEY);
+    if (raw === null) return true;
+    return raw === "1";
+  } catch {
+    return true;
+  }
+}
+
+function saveSoundPreference(enabled) {
+  try {
+    window.localStorage.setItem(STORAGE_SOUND_KEY, enabled ? "1" : "0");
+  } catch {}
+}
+
+function loadMusicPreference() {
+  try {
+    const raw = window.localStorage.getItem(STORAGE_MUSIC_KEY);
+    if (raw === null) return true;
+    return raw === "1";
+  } catch {
+    return true;
+  }
+}
+
+function saveMusicPreference(enabled) {
+  try {
+    window.localStorage.setItem(STORAGE_MUSIC_KEY, enabled ? "1" : "0");
+  } catch {}
 }
 
 function allLinksBuffed() {
@@ -658,6 +1019,7 @@ function renderCardsInfoTable() {
 
 function openCardsInfoModal() {
   if (!ui.cardsInfoModal) return;
+  audioFx.uiTap();
   renderCardsInfoTable();
   openSimpleModal(ui.cardsInfoModal);
 }
@@ -669,6 +1031,7 @@ function closeCardsInfoModal() {
 
 function openHelpModal() {
   if (!ui.helpModal) return;
+  audioFx.uiTap();
   openSimpleModal(ui.helpModal);
 }
 
@@ -888,12 +1251,13 @@ function cycleSelectedGun(direction = 1) {
 
 function initializeGunSlots() {
   world.guns.forEach((gun, idx) => {
-    gun.slotUnlocked = idx === 0;
-    gun.installed = idx === 0;
+    gun.slotUnlocked = idx < 2;
+    gun.installed = idx < 2;
     gun.chooseAttackProfile("circular");
   });
   placeInitialGunsOnWall();
   setSelectedGuns([0], 0);
+  state.unlockedGunSlots = 2;
 }
 
 function unlockNextGunSlot(count = 1) {
@@ -1049,6 +1413,8 @@ function updateHud() {
   ui.restartBtn.classList.toggle("hidden", !state.gameOver);
   if (ui.pauseBtn) ui.pauseBtn.textContent = state.userPaused ? "Продолжить" : "Пауза";
   if (ui.threeModeBtn) ui.threeModeBtn.textContent = state.threeMode ? "2D режим" : "3D режим";
+  if (ui.soundBtn) ui.soundBtn.textContent = state.soundEnabled ? "Звук: ON" : "Звук: OFF";
+  if (ui.musicBtn) ui.musicBtn.textContent = state.musicEnabled ? "Музыка: ON" : "Музыка: OFF";
   if (state.selectedGunIndex >= 0 && !world.guns[state.selectedGunIndex].installed) {
     setSelectedGuns([]);
   }
@@ -1106,6 +1472,7 @@ function updateHud() {
 function openCardModal(cards, hint, onPick) {
   state.pausedByCards = true;
   state.modalTargetPick = null;
+  audioFx.cardOpen();
   ui.modal.classList.remove("hidden");
   ui.modal.classList.remove("modal-open");
   if (ui.cardModalTitle) ui.cardModalTitle.textContent = `Выбери 1 из ${cards.length} карточек`;
@@ -1133,7 +1500,10 @@ function openCardModal(cards, hint, onPick) {
       `<div class="game-card-art"></div>`,
       `<div class="game-card-body">${card.description}</div>`,
     ].join("");
-    btn.onclick = () => onPick(card);
+    btn.onclick = () => {
+      audioFx.cardPick();
+      onPick(card);
+    };
     ui.cardChoices.append(btn);
   });
   animateModalOpen();
@@ -1194,7 +1564,9 @@ function animateModalGunStrip() {
 }
 
 function maybeOfferQueuedRewards() {
+  if (state.gameOver) return;
   if (state.pausedByCards) return;
+  if (state.rewardModalDelay > 0) return;
   if (state.pendingBossLensRewards > 0) {
     offerBossLensCard();
     return;
@@ -1254,6 +1626,7 @@ function beginWave(wave) {
   state.waveQueue = state.isBossWave ? 1 : WAVE_SIZE(wave);
   state.spawnTimer = 0;
   state.waveRewardGranted = false;
+  state.rewardModalDelay = 0;
   if (state.isBossWave) {
     logLine(`Волна ${wave}: БОСС.`);
   } else {
@@ -1372,6 +1745,7 @@ function createOilPuddle(x, y, magicScale) {
 function triggerLightning(startEnemy, combat) {
   if (combat.lightningChance <= 0 || combat.lightningChains <= 0 || combat.lightningRadius <= 0) return;
   if (Math.random() >= combat.lightningChance) return;
+  audioFx.lightning();
 
   const magicMult = combat.magicScale;
   let current = startEnemy;
@@ -1414,11 +1788,13 @@ function applyHit(enemy, damage, combat) {
   if (Math.random() < combat.burnChance) {
     const burnState = enemy.applyBurn(combat.magicScale);
     enemy.lastHitKind = "magic";
+    if (burnState !== "thaw") audioFx.burn();
     pushParticle(enemy.x, enemy.y, { color: burnState === "thaw" ? "#ffd39b" : "#ff9966", size: 2.7 });
   }
   if (Math.random() < combat.iceChance) {
     const freezeState = enemy.applyFreeze(combat.magicScale);
     enemy.lastHitKind = "magic";
+    if (freezeState !== "extinguish") audioFx.freeze();
     pushParticle(enemy.x, enemy.y, { color: freezeState === "extinguish" ? "#d8ecff" : "#7ecaff", size: 2.9 });
   }
   if (Math.random() < combat.oilChance) createOilPuddle(enemy.x, enemy.y, combat.magicScale);
@@ -1441,6 +1817,7 @@ function pickGunTarget(gun) {
 }
 
 function fireShotgun(gun, baseDamage, combat) {
+  audioFx.shotShotgun();
   const pellets = gun.shotgunPellets || 5;
   const spread = ((gun.shotgunSpread || 120) * Math.PI) / 180;
   for (let i = 0; i < pellets; i += 1) {
@@ -1493,6 +1870,7 @@ function fireShotgun(gun, baseDamage, combat) {
 }
 
 function fireSniper(gun, baseDamage, target, combat, crit) {
+  audioFx.shotSniper();
   const shotDamage = baseDamage * 1.3;
   const dirXRaw = target.x - gun.x;
   const dirYRaw = target.y - gun.y;
@@ -1559,6 +1937,7 @@ function handleShooting(dt) {
       return;
     }
 
+    audioFx.shotCircular();
     applyHit(target, damage, combat);
     world.beams.push({
       x1: gun.x,
@@ -1590,6 +1969,7 @@ function updateEnemies(dt) {
       const wallDmg = enemyWallDamage(enemy);
       state.wallHp -= wallDmg;
       enemy.lastHitKind = "wall";
+      audioFx.hitWall();
       spawnExplosion(enemy.x, enemy.y, "wall", enemy.isBoss ? 1.5 : 1);
       enemy.hp = -1;
       logLine(`${enemy.isBoss ? "Босс" : "Монстр"} ударил стену: -${wallDmg.toFixed(1)} HP.`);
@@ -1603,6 +1983,7 @@ function clearDeadEnemies() {
   let killsNow = 0;
   world.enemies = world.enemies.filter((enemy) => {
     if (enemy.hp <= 0 && !enemy.reachedWall) {
+      audioFx.enemyDeath(enemy.isBoss);
       spawnExplosion(enemy.x, enemy.y, enemy.lastHitKind === "magic" ? "magic" : "death", enemy.isBoss ? 1.35 : 1);
       killsNow += 1;
       if (enemy.isBoss) deadBosses.push(enemy);
@@ -1637,12 +2018,18 @@ function updateWave(dt) {
   if (!state.waveRewardGranted) {
     state.pendingRegularCardRewards += 1;
     state.waveRewardGranted = true;
+    state.rewardModalDelay = 0.65;
     if (state.isBossWave) {
       unlockNextGunSlot(1);
       logLine("Босс-волна завершена. Открыт следующий слот пушки.");
     }
     logLine("Волна завершена. Выдана карточка усиления.");
+  }
+  if (state.rewardModalDelay > 0) {
+    state.rewardModalDelay = Math.max(0, state.rewardModalDelay - dt);
+    if (state.rewardModalDelay > 0) return;
     maybeOfferQueuedRewards();
+    if (state.pausedByCards) return;
   }
   if (state.pausedByCards) return;
   state.nextWaveDelay -= dt;
@@ -2699,7 +3086,7 @@ function setupCanvasForDpr() {
 }
 
 function update(dt) {
-  if (state.pausedByCards || state.userPaused || state.gameOver) return;
+  if (!state.started || state.pausedByCards || state.userPaused || state.gameOver) return;
   updateKeyboardGunMove(dt);
   handleShooting(dt);
   updateEnemies(dt);
@@ -2776,6 +3163,7 @@ function endGroupDrag() {
 }
 
 function onCanvasMouseDown(event) {
+  audioFx.unlock();
   const { x, y } = canvasToWorld(event);
   const hitIdx = pickGunIndexAt(x, y);
   if (hitIdx < 0) {
@@ -2832,6 +3220,7 @@ function getTouchPoint(touchEvent) {
 
 function onCanvasTouchStart(event) {
   event.preventDefault();
+  audioFx.unlock();
   const { x, y } = canvasToWorld(getTouchPoint(event));
   const hitIdx = pickGunIndexAt(x, y);
   if (hitIdx < 0) {
@@ -2861,9 +3250,11 @@ function onCanvasTouchEnd(event) {
 }
 
 function onGunStripPointerDown(event) {
+  audioFx.unlock();
   const profileBtn = event.target.closest(".js-profile-select");
   if (profileBtn && ui.gunStrip?.contains(profileBtn)) {
     event.preventDefault();
+    audioFx.uiTap();
     const idx = Number(profileBtn.getAttribute("data-idx"));
     const profile = profileBtn.getAttribute("data-profile");
     const gun = world.guns[idx];
@@ -2878,6 +3269,7 @@ function onGunStripPointerDown(event) {
   const slotBtn = event.target.closest(".js-slot");
   if (slotBtn && ui.gunStrip?.contains(slotBtn)) {
     event.preventDefault();
+    audioFx.uiTap();
     const idx = Number(slotBtn.getAttribute("data-idx"));
     const gun = world.guns[idx];
     if (!gun) return;
@@ -2891,6 +3283,7 @@ function onModalGunStripPointerDown(event) {
   const pickCard = event.target.closest(".gun-pill.pickable");
   if (pickCard && ui.modalGunStrip?.contains(pickCard)) {
     event.preventDefault();
+    audioFx.cardPick();
     const idx = Number(pickCard.dataset.idx);
     const target = state.modalTargetPick;
     const gun = world.guns[idx];
@@ -2917,11 +3310,13 @@ function updateKeyboardGunMove(dt) {
 function onWindowKeyDown(event) {
   if (event.defaultPrevented) return;
   if (state.gameOver || state.pausedByCards) return;
+  audioFx.unlock();
   const target = event.target;
   if (target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable)) return;
 
   if (event.code === "Tab") {
     event.preventDefault();
+    audioFx.uiTap();
     cycleSelectedGun(event.shiftKey ? -1 : 1);
     updateHud();
     return;
@@ -2967,8 +3362,26 @@ function onWindowKeyUp(event) {
   }
 }
 
+function startGame() {
+  if (state.started) return;
+  state.started = true;
+  if (ui.startOverlay) ui.startOverlay.classList.add("hidden");
+  audioFx.enabled = state.soundEnabled;
+  audioFx.musicEnabled = state.musicEnabled;
+  audioFx.unlock();
+  if (state.musicEnabled) audioFx.startMusic();
+  if (state.soundEnabled) audioFx.cardOpen();
+  beginWave(1);
+  logLine("Старт TD: монстры двигаются справа налево к стене.");
+  updateHud();
+}
+
 function init() {
   initializeGunSlots();
+  state.soundEnabled = loadSoundPreference();
+  state.musicEnabled = loadMusicPreference();
+  audioFx.enabled = state.soundEnabled;
+  audioFx.musicEnabled = state.musicEnabled;
   setupCanvasForDpr();
   window.addEventListener("resize", setupCanvasForDpr);
   window.addEventListener("keydown", onWindowKeyDown);
@@ -2985,6 +3398,12 @@ function init() {
   canvas.addEventListener("touchcancel", onCanvasTouchEnd, { passive: false });
   if (ui.gunStrip) ui.gunStrip.addEventListener("pointerdown", onGunStripPointerDown);
   if (ui.modalGunStrip) ui.modalGunStrip.addEventListener("pointerdown", onModalGunStripPointerDown);
+  if (ui.startGameBtn) {
+    ui.startGameBtn.addEventListener("click", () => {
+      audioFx.unlock();
+      startGame();
+    });
+  }
   ui.restartBtn.addEventListener("click", () => {
     window.location.reload();
   });
@@ -3004,13 +3423,42 @@ function init() {
   }
   if (ui.pauseBtn) {
     ui.pauseBtn.addEventListener("click", () => {
+      audioFx.uiTap();
       if (state.gameOver) return;
       state.userPaused = !state.userPaused;
       updateHud();
     });
   }
+  if (ui.soundBtn) {
+    ui.soundBtn.addEventListener("click", () => {
+      state.soundEnabled = !state.soundEnabled;
+      audioFx.enabled = state.soundEnabled;
+      saveSoundPreference(state.soundEnabled);
+      if (state.soundEnabled) {
+        audioFx.unlock();
+        audioFx.uiTap();
+      }
+      updateHud();
+    });
+  }
+  if (ui.musicBtn) {
+    ui.musicBtn.addEventListener("click", () => {
+      state.musicEnabled = !state.musicEnabled;
+      audioFx.musicEnabled = state.musicEnabled;
+      saveMusicPreference(state.musicEnabled);
+      if (state.musicEnabled) {
+        audioFx.unlock();
+        if (state.started) audioFx.startMusic();
+        if (state.soundEnabled) audioFx.uiTap();
+      } else {
+        audioFx.stopMusic();
+      }
+      updateHud();
+    });
+  }
   if (ui.threeModeBtn) {
     ui.threeModeBtn.addEventListener("click", () => {
+      audioFx.uiTap();
       if (!window.THREE) {
         logLine("3D режим недоступен: three.js не загружен.");
         return;
@@ -3025,8 +3473,7 @@ function init() {
     ui.threeLayer.addEventListener("pointercancel", onThreePointerUp);
     ui.threeLayer.addEventListener("wheel", onThreeWheel, { passive: false });
   }
-  beginWave(1);
-  logLine("Старт TD: монстры двигаются справа налево к стене.");
+  if (ui.startOverlay) ui.startOverlay.classList.toggle("hidden", state.started);
   requestAnimationFrame((t) => {
     state.lastTime = t;
     frame(t);
