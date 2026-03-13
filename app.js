@@ -13,6 +13,8 @@ class SynthAudio {
     this.ctx = null;
     this.master = null;
     this.musicMaster = null;
+    this.baseMasterGain = 0.32;
+    this.userVolume = 1;
     this.enabled = true;
     this.lastPlayed = new Map();
     this.musicEnabled = true;
@@ -30,10 +32,10 @@ class SynthAudio {
     if (!this.ctx) {
       this.ctx = new AudioCtx();
       this.master = this.ctx.createGain();
-      this.master.gain.value = 0.18;
+      this.master.gain.value = this.baseMasterGain * this.userVolume;
       this.master.connect(this.ctx.destination);
       this.musicMaster = this.ctx.createGain();
-      this.musicMaster.gain.value = 0.34;
+      this.musicMaster.gain.value = 0.52;
       this.musicMaster.connect(this.master);
     }
     if (this.ctx.state === "suspended") this.ctx.resume();
@@ -137,6 +139,11 @@ class SynthAudio {
     }
     this.unlock();
     this.startMusic();
+  }
+
+  setMasterVolume(volume) {
+    this.userVolume = Math.max(0, Math.min(1, volume));
+    if (this.master) this.master.gain.value = this.baseMasterGain * this.userVolume;
   }
 
   startMusic() {
@@ -966,6 +973,7 @@ const LOGICAL_WIDTH = 960;
 const LOGICAL_HEIGHT = 540;
 let currentDpr = 1;
 let enemyUidSeq = 1;
+let backgroundCacheCanvas = null;
 
 const ui = {
   board: document.querySelector(".board"),
@@ -984,6 +992,7 @@ const ui = {
   targetChoices: document.getElementById("targetChoices"),
   gunStrip: document.getElementById("gunStrip"),
   modalGunStrip: document.getElementById("modalGunStrip"),
+  manualCrosshair: document.getElementById("manualCrosshair"),
   startOverlay: document.getElementById("startOverlay"),
   startGameBtn: document.getElementById("startGameBtn"),
   restartBtn: document.getElementById("restartBtn"),
@@ -998,11 +1007,14 @@ const ui = {
   threeModeBtn: document.getElementById("threeModeBtn"),
   soundBtn: document.getElementById("soundBtn"),
   musicBtn: document.getElementById("musicBtn"),
+  volumeSlider: document.getElementById("volumeSlider"),
+  volumeValue: document.getElementById("volumeValue"),
 };
 
 const audioFx = new SynthAudio();
 const STORAGE_SOUND_KEY = "lost-games-td-sound-enabled";
 const STORAGE_MUSIC_KEY = "lost-games-td-music-enabled";
+const STORAGE_VOLUME_KEY = "lost-games-td-volume";
 
 const world = {
   width: LOGICAL_WIDTH,
@@ -1066,9 +1078,21 @@ const state = {
   modalTargetPick: null,
   moveGunUpHeld: false,
   moveGunDownHeld: false,
+  moveGunLeftHeld: false,
+  moveGunRightHeld: false,
   soundEnabled: true,
   musicEnabled: true,
+  volume: 1,
   started: false,
+  manualMode: false,
+  manualGunIndex: -1,
+  manualAimAngle: 0,
+  manualAimDistance: 160,
+  manualDragActive: false,
+  manualPrevThreeMode: false,
+  hudDirty: true,
+  gunStripDirty: true,
+  hudNextRefreshAt: 0,
   lastTime: performance.now(),
 };
 
@@ -1108,6 +1132,24 @@ function loadMusicPreference() {
 function saveMusicPreference(enabled) {
   try {
     window.localStorage.setItem(STORAGE_MUSIC_KEY, enabled ? "1" : "0");
+  } catch {}
+}
+
+function loadVolumePreference() {
+  try {
+    const raw = window.localStorage.getItem(STORAGE_VOLUME_KEY);
+    if (raw === null) return 1;
+    const value = Number(raw);
+    if (!Number.isFinite(value)) return 1;
+    return Math.max(0, Math.min(1, value));
+  } catch {
+    return 1;
+  }
+}
+
+function saveVolumePreference(volume) {
+  try {
+    window.localStorage.setItem(STORAGE_VOLUME_KEY, String(Math.max(0, Math.min(1, volume))));
   } catch {}
 }
 
@@ -1360,6 +1402,10 @@ function setSelectedGuns(indices, primary = -1) {
     (idx) => idx >= 0 && idx < world.guns.length && world.guns[idx].installed
   );
   state.selectedGunIndices = unique;
+  state.hudDirty = true;
+  if (state.manualMode && (unique.length !== 1 || !unique.includes(state.manualGunIndex))) {
+    exitManualMode(true);
+  }
   if (unique.length === 0) {
     state.selectedGunIndex = -1;
     return;
@@ -1409,6 +1455,96 @@ function getInstalledGunIndices() {
   return world.guns.map((gun, idx) => (gun.installed ? idx : -1)).filter((idx) => idx >= 0);
 }
 
+function getManualRangeForGun(gun) {
+  if (!gun) return 0;
+  return gun.attackMode === "sniper" ? Math.max(80, world.width - gun.x) : gun.range;
+}
+
+function clampManualAimForGun(gun) {
+  if (!gun) return;
+  const maxRange = getManualRangeForGun(gun);
+  state.manualAimAngle = Math.max(-1.18, Math.min(1.18, state.manualAimAngle));
+  state.manualAimDistance = Math.max(60, Math.min(maxRange, state.manualAimDistance));
+}
+
+function getManualAimPoint(gun) {
+  const maxRange = getManualRangeForGun(gun);
+  const distance = Math.max(60, Math.min(maxRange, state.manualAimDistance));
+  return {
+    x: gun.x + Math.cos(state.manualAimAngle) * distance,
+    y: gun.y + Math.sin(state.manualAimAngle) * distance,
+    angle: state.manualAimAngle,
+    distance,
+    maxRange,
+  };
+}
+
+function isManualGun(gun, idx) {
+  return state.manualMode && idx === state.manualGunIndex && world.guns[idx] === gun;
+}
+
+function exitManualMode(restoreView = true) {
+  if (!state.manualMode) return;
+  const shouldRestoreThree = restoreView ? state.manualPrevThreeMode : state.threeMode;
+  state.manualMode = false;
+  state.manualGunIndex = -1;
+  state.manualDragActive = false;
+  if (ui.manualCrosshair) ui.manualCrosshair.classList.add("hidden");
+  if (!shouldRestoreThree) setThreeMode(false);
+  state.hudDirty = true;
+  state.gunStripDirty = true;
+}
+
+function enterManualMode() {
+  const idx = state.selectedGunIndex;
+  const gun = idx >= 0 ? world.guns[idx] : null;
+  if (!gun?.installed || state.selectedGunIndices.length !== 1) return;
+  state.manualPrevThreeMode = state.threeMode;
+  state.manualMode = true;
+  state.manualGunIndex = idx;
+  state.manualAimAngle = 0;
+  state.manualAimDistance = Math.min(getManualRangeForGun(gun), Math.max(140, gun.range * 0.82));
+  state.manualDragActive = false;
+  setThreeMode(true);
+  if (ui.manualCrosshair) ui.manualCrosshair.classList.remove("hidden");
+  state.hudDirty = true;
+}
+
+function toggleManualMode() {
+  if (state.manualMode) {
+    exitManualMode(true);
+    return;
+  }
+  enterManualMode();
+}
+
+function pickManualTarget(gun) {
+  if (!state.manualMode) return null;
+  const aim = getManualAimPoint(gun);
+  let target = null;
+  let bestScore = Infinity;
+  for (const enemy of world.enemies) {
+    if (!enemy.alive()) continue;
+    const dx = enemy.x - gun.x;
+    const dy = enemy.y - gun.y;
+    const dist = Math.hypot(dx, dy);
+    if (dist > aim.maxRange || dx < 0) continue;
+    const aimDist = Math.hypot(enemy.x - aim.x, enemy.y - aim.y);
+    const angleMiss = Math.abs(Math.atan2(dy, dx) - aim.angle);
+    const wrapMiss = Math.min(angleMiss, Math.abs(angleMiss - Math.PI * 2));
+    const missThreshold = enemy.radius + (gun.attackMode === "sniper" ? 26 : gun.attackMode === "shotgun" ? 34 : 24);
+    const coneThreshold = gun.attackMode === "shotgun" ? ((gun.shotgunSpread || 42) * Math.PI) / 360 + 0.08 : 0.24;
+    if (aimDist > missThreshold) continue;
+    if (wrapMiss > coneThreshold) continue;
+    const score = aimDist + wrapMiss * 80 + dist * 0.015;
+    if (score < bestScore) {
+      bestScore = score;
+      target = enemy;
+    }
+  }
+  return target;
+}
+
 function cycleSelectedGun(direction = 1) {
   const installed = getInstalledGunIndices();
   if (installed.length === 0) return;
@@ -1443,6 +1579,7 @@ function unlockNextGunSlot(count = 1) {
     unlockedNow += 1;
     state.unlockedGunSlots += 1;
   }
+  if (unlockedNow > 0) state.gunStripDirty = true;
   if (unlockedNow > 0) logLine(`Открыт слот пушки: +${unlockedNow}. (${state.unlockedGunSlots}/5)`);
 }
 
@@ -1450,6 +1587,7 @@ function installGun(idx) {
   const gun = world.guns[idx];
   if (!gun || !gun.slotUnlocked || gun.installed) return;
   gun.installed = true;
+  state.gunStripDirty = true;
   placeInitialGunsOnWall();
 }
 
@@ -1458,6 +1596,7 @@ function removeGun(idx) {
   if (!gun || !gun.installed) return;
   if (getInstalledGuns().length <= 1) return;
   gun.installed = false;
+  state.gunStripDirty = true;
   setSelectedGuns(state.selectedGunIndices.filter((v) => v !== idx), state.selectedGunIndex);
   placeInitialGunsOnWall();
 }
@@ -1579,7 +1718,10 @@ function toggleGunSelection(idx) {
   setSelectedGuns([...state.selectedGunIndices, idx], idx);
 }
 
-function updateHud() {
+function updateHud(force = true) {
+  const now = performance.now();
+  if (!force && !state.hudDirty && now < state.hudNextRefreshAt) return;
+  state.hudNextRefreshAt = now + 120;
   ui.wave.textContent = String(state.wave);
   ui.kills.textContent = String(state.kills);
   ui.baseHp.textContent = String(Math.max(0, state.wallHp).toFixed(1));
@@ -1589,6 +1731,10 @@ function updateHud() {
   if (ui.threeModeBtn) ui.threeModeBtn.textContent = state.threeMode ? "2D режим" : "3D режим";
   if (ui.soundBtn) ui.soundBtn.textContent = state.soundEnabled ? "Звук: ON" : "Звук: OFF";
   if (ui.musicBtn) ui.musicBtn.textContent = state.musicEnabled ? "Музыка: ON" : "Музыка: OFF";
+  if (ui.volumeSlider && document.activeElement !== ui.volumeSlider) {
+    ui.volumeSlider.value = String(Math.round(state.volume * 100));
+  }
+  if (ui.volumeValue) ui.volumeValue.textContent = `${Math.round(state.volume * 100)}%`;
   if (state.selectedGunIndex >= 0 && !world.guns[state.selectedGunIndex].installed) {
     setSelectedGuns([]);
   }
@@ -1616,6 +1762,7 @@ function updateHud() {
       `<div><strong>Выбрано башен: ${state.selectedGunIndices.length}</strong></div>`,
       `<div>${names}</div>`,
       `<div>Перетаскивай любую выбранную башню, чтобы двигать группу.</div>`,
+      state.manualMode ? `<button class="meta-btn manual-toggle-btn" type="button" data-manual-toggle="1">Выйти из Ручного Режима</button>` : "",
     ].join("");
   } else {
     const gun = world.guns[state.selectedGunIndex];
@@ -1638,9 +1785,12 @@ function updateHud() {
       `<div>Энергия: поток x${combat.sharedEnergyScale.toFixed(2)} · пушка x${gun.energyMultiplier.toFixed(2)} · линза x${(lensPacket.energyMultiplier || 1).toFixed(2)} = x${combat.energyScale.toFixed(2)}</div>`,
       `<div>Звенья: ${buffedLinks}/${totalLinks} (макс ${MAX_LINKS_PER_GUN})</div>`,
       `<div>Апгрейды: ${gunUpgradesText(gun)}</div>`,
+      `<button class="meta-btn manual-toggle-btn" type="button" data-manual-toggle="1">${isManualGun(gun, state.selectedGunIndex) ? "Выйти из Ручного Режима" : "Ручной Режим"}</button>`,
     ].join("");
   }
-  renderGunStrip(ui.gunStrip);
+  if (force || state.gunStripDirty) renderGunStrip(ui.gunStrip);
+  state.hudDirty = false;
+  state.gunStripDirty = false;
 }
 
 function openCardModal(cards, hint, onPick) {
@@ -1849,9 +1999,9 @@ function enemyWallDamage(enemy) {
 function enemyInGunZone(gun, enemy) {
   const dx = enemy.x - gun.x;
   const dy = enemy.y - gun.y;
-  if (dx < 0) return false;
 
   if (gun.attackMode === "sniper") {
+    if (dx < 0) return false;
     const maxDx = Math.max(1, world.width - gun.x);
     if (dx > maxDx) return false;
     const t = dx / maxDx;
@@ -1859,6 +2009,7 @@ function enemyInGunZone(gun, enemy) {
     return Math.abs(dy) <= halfWidth;
   }
   if (gun.attackMode === "shotgun") {
+    if (dx < 0) return false;
     const halfAngle = ((gun.shotgunSpread || 120) * Math.PI) / 360;
     const angle = Math.atan2(dy, dx);
     return Math.hypot(dx, dy) <= gun.range && Math.abs(angle) <= halfAngle;
@@ -1990,13 +2141,13 @@ function pickGunTarget(gun) {
   return target;
 }
 
-function fireShotgun(gun, baseDamage, combat) {
+function fireShotgun(gun, baseDamage, combat, centerAngle = 0) {
   audioFx.shotShotgun();
   const pellets = gun.shotgunPellets || 5;
   const spread = ((gun.shotgunSpread || 120) * Math.PI) / 180;
   for (let i = 0; i < pellets; i += 1) {
     const lane = pellets === 1 ? 0.5 : i / (pellets - 1);
-    const angle = -spread / 2 + spread * lane;
+    const angle = centerAngle - spread / 2 + spread * lane;
     const dirX = Math.cos(angle);
     const dirY = Math.sin(angle);
     const xEnd = gun.x + dirX * gun.range;
@@ -2043,14 +2194,11 @@ function fireShotgun(gun, baseDamage, combat) {
   }
 }
 
-function fireSniper(gun, baseDamage, target, combat, crit) {
+function fireSniper(gun, baseDamage, target, combat, crit, forcedAngle = null) {
   audioFx.shotSniper();
   const shotDamage = baseDamage * 1.3;
-  const dirXRaw = target.x - gun.x;
-  const dirYRaw = target.y - gun.y;
-  const len = Math.max(1, Math.hypot(dirXRaw, dirYRaw));
-  const dirX = dirXRaw / len;
-  const dirY = dirYRaw / len;
+  const dirX = forcedAngle === null ? (target.x - gun.x) / Math.max(1, Math.hypot(target.x - gun.x, target.y - gun.y)) : Math.cos(forcedAngle);
+  const dirY = forcedAngle === null ? (target.y - gun.y) / Math.max(1, Math.hypot(target.x - gun.x, target.y - gun.y)) : Math.sin(forcedAngle);
   const maxDx = Math.max(1, world.width - gun.x);
   const tToEdge = maxDx / Math.max(0.0001, dirX);
   const endX = gun.x + dirX * tToEdge;
@@ -2091,23 +2239,28 @@ function handleShooting(dt) {
     if (gun.cooldown > 0) gun.cooldown -= dt;
     if (gun.cooldown > 0) return;
 
-    const target = pickGunTarget(gun);
+    const worldIdx = world.guns.indexOf(gun);
+    const manual = isManualGun(gun, worldIdx);
+    const target = manual ? pickManualTarget(gun) : pickGunTarget(gun);
     if (!target) return;
 
-    gun.cooldown = 1 / gun.fireRate;
+    const fireRate = manual ? gun.fireRate * 1.5 : gun.fireRate;
+    gun.cooldown = 1 / fireRate;
     const packet = packets[idx];
     const crit = Math.random() < packet.critChance;
     const critMultiplier = crit ? packet.critMultiplier : 1;
     const combat = composeCombatStats(gun, packet);
-    const damage = (gun.baseDamage + gun.flatDamage) * gun.multiplier * critMultiplier * combat.energyScale;
+    const manualBoost = manual ? 1.5 : 1;
+    const damage = (gun.baseDamage + gun.flatDamage) * gun.multiplier * critMultiplier * combat.energyScale * manualBoost;
+    const aimAngle = manual ? getManualAimPoint(gun).angle : null;
 
     if (gun.attackMode === "shotgun") {
-      fireShotgun(gun, damage, combat);
+      fireShotgun(gun, damage, combat, aimAngle || 0);
       return;
     }
 
     if (gun.attackMode === "sniper") {
-      fireSniper(gun, damage, target, combat, crit);
+      fireSniper(gun, damage, target, combat, crit, aimAngle);
       return;
     }
 
@@ -2252,21 +2405,24 @@ function updateVisualEffects(dt) {
   world.puddles = world.puddles.filter((p) => p.life > 0);
 }
 
-function drawBackground() {
-  const grad = ctx.createLinearGradient(0, 0, 0, world.height);
+function buildBackgroundCache() {
+  backgroundCacheCanvas = document.createElement("canvas");
+  backgroundCacheCanvas.width = world.width;
+  backgroundCacheCanvas.height = world.height;
+  const bg = backgroundCacheCanvas.getContext("2d");
+
+  const grad = bg.createLinearGradient(0, 0, 0, world.height);
   grad.addColorStop(0, "#030914");
   grad.addColorStop(1, "#02060f");
-  ctx.fillStyle = grad;
-  ctx.fillRect(0, 0, world.width, world.height);
+  bg.fillStyle = grad;
+  bg.fillRect(0, 0, world.width, world.height);
 
-  const glow = ctx.createRadialGradient(world.width * 0.5, world.height * 0.5, 20, world.width * 0.5, world.height * 0.5, world.width * 0.7);
+  const glow = bg.createRadialGradient(world.width * 0.5, world.height * 0.5, 20, world.width * 0.5, world.height * 0.5, world.width * 0.7);
   glow.addColorStop(0, "rgba(50,132,194,0.10)");
   glow.addColorStop(1, "rgba(0,0,0,0)");
-  ctx.fillStyle = glow;
-  ctx.fillRect(0, 0, world.width, world.height);
-}
+  bg.fillStyle = glow;
+  bg.fillRect(0, 0, world.width, world.height);
 
-function drawZones() {
   const zones = [
     { x: 0, w: 150, color: "rgba(38,132,173,0.08)" },
     { x: 150, w: 140, color: "rgba(48,94,186,0.08)" },
@@ -2276,24 +2432,29 @@ function drawZones() {
   ];
 
   zones.forEach((zone) => {
-    ctx.fillStyle = zone.color;
-    ctx.fillRect(zone.x, 0, zone.w, world.height);
+    bg.fillStyle = zone.color;
+    bg.fillRect(zone.x, 0, zone.w, world.height);
   });
 
-  ctx.strokeStyle = "rgba(86,170,230,0.14)";
-  ctx.lineWidth = 1;
+  bg.strokeStyle = "rgba(86,170,230,0.14)";
+  bg.lineWidth = 1;
   for (let x = 0.5; x < world.width; x += 34) {
-    ctx.beginPath();
-    ctx.moveTo(x, 0);
-    ctx.lineTo(x, world.height);
-    ctx.stroke();
+    bg.beginPath();
+    bg.moveTo(x, 0);
+    bg.lineTo(x, world.height);
+    bg.stroke();
   }
   for (let y = 0.5; y < world.height; y += 34) {
-    ctx.beginPath();
-    ctx.moveTo(0, y);
-    ctx.lineTo(world.width, y);
-    ctx.stroke();
+    bg.beginPath();
+    bg.moveTo(0, y);
+    bg.lineTo(world.width, y);
+    bg.stroke();
   }
+}
+
+function drawBackground() {
+  if (!backgroundCacheCanvas) buildBackgroundCache();
+  ctx.drawImage(backgroundCacheCanvas, 0, 0);
 }
 
 function drawEngineAndLens(now) {
@@ -2332,7 +2493,11 @@ function drawGuns() {
   world.guns.forEach((gun, idx) => {
     if (!gun.installed) return;
     const selected = isGunSelected(idx);
+    const manual = isManualGun(gun, idx);
+    const gunAlpha = manual ? 0 : 1;
 
+    ctx.save();
+    ctx.globalAlpha = gunAlpha;
     ctx.fillStyle = selected ? "#2e6e88" : "#1e4362";
     ctx.strokeStyle = selected ? "#73ffe1" : "#4f9bd2";
     ctx.lineWidth = selected ? 3 : 2;
@@ -2403,6 +2568,7 @@ function drawGuns() {
     }
     ctx.textAlign = "left";
     ctx.textBaseline = "alphabetic";
+    ctx.restore();
   });
 }
 
@@ -2555,6 +2721,8 @@ const threeView = {
   lensGunBeams: [],
   zoneGroup: null,
   enemyInfoGroup: null,
+  lastZoneOverlayUpdate: 0,
+  lastEnemyInfoUpdate: 0,
   orbit: {
     azimuth: 0,
     elevation: 0.58,
@@ -2625,6 +2793,19 @@ function updateThreeCameraFromOrbit() {
   threeView.camera.up.set(0, 0, 1);
   threeView.camera.position.set(x, y, z);
   threeView.camera.lookAt(o.targetX, o.targetY, o.targetZ);
+}
+
+function updateManualCamera() {
+  if (!threeView.ready || !state.manualMode) return;
+  const gun = world.guns[state.manualGunIndex];
+  if (!gun?.installed) return;
+  clampManualAimForGun(gun);
+  const aim = getManualAimPoint(gun);
+  const camPos = worldToThree(gun.x - 18, gun.y, 24);
+  const lookAt = worldToThree(aim.x, aim.y, 14);
+  threeView.camera.up.set(0, 0, 1);
+  threeView.camera.position.copy(camPos);
+  threeView.camera.lookAt(lookAt);
 }
 
 function worldToThree(x, y, z = 0) {
@@ -2859,6 +3040,8 @@ function initThreeView() {
   threeView.lensGunBeams = lensGunBeams;
   threeView.zoneGroup = zoneGroup;
   threeView.enemyInfoGroup = enemyInfoGroup;
+  threeView.lastZoneOverlayUpdate = 0;
+  threeView.lastEnemyInfoUpdate = 0;
   threeView.ready = true;
   threeView.orbit.azimuth = -Math.PI / 2;
   threeView.orbit.elevation = 0.58;
@@ -2952,6 +3135,13 @@ function syncThreeWorld(now) {
     if (rod) placeBeamRod(rod, lPos, p);
     const pulse = isGunSelected(idx) ? 1.2 : 1;
     mesh.scale.set(pulse, pulse, pulse);
+    const manual = isManualGun(gun, idx);
+    mesh.traverse((child) => {
+      if (!child.material) return;
+      child.material.transparent = manual;
+      child.material.opacity = manual ? 0 : 1;
+      child.material.depthWrite = !manual;
+    });
     const target = pickGunTarget(gun);
     const targetAngle = target ? -Math.atan2(target.y - gun.y, target.x - gun.x) : 0;
     const currentAngle = mesh.rotation.z || 0;
@@ -2961,33 +3151,37 @@ function syncThreeWorld(now) {
     }
   });
 
-  clearThreeGroup(threeView.zoneGroup);
-  for (const gun of getInstalledGuns()) {
-    const points = [];
-    if (gun.attackMode === "sniper") {
-      const xEnd = world.width;
-      points.push(worldToThree(gun.x, gun.y - 8, 12));
-      points.push(worldToThree(xEnd, gun.y - gun.verticalBand / 2, 12));
-      points.push(worldToThree(xEnd, gun.y + gun.verticalBand / 2, 12));
-      points.push(worldToThree(gun.x, gun.y + 8, 12));
-      threeView.zoneGroup.add(makeThreeLine(points, 0x77d7ff, 0.36, true));
-    } else if (gun.attackMode === "shotgun") {
-      const halfAngle = ((gun.shotgunSpread || 120) * Math.PI) / 360;
-      const x2 = gun.x + gun.range;
-      const yTop = gun.y - Math.tan(halfAngle) * gun.range;
-      const yBottom = gun.y + Math.tan(halfAngle) * gun.range;
-      points.push(worldToThree(gun.x, gun.y, 12));
-      points.push(worldToThree(x2, yTop, 12));
-      points.push(worldToThree(x2, yBottom, 12));
-      threeView.zoneGroup.add(makeThreeLine(points, 0x7ecbff, 0.3, true));
-    } else {
-      const steps = 44;
-      for (let i = 0; i < steps; i += 1) {
-        const a = (Math.PI * 2 * i) / steps;
-        points.push(worldToThree(gun.x + Math.cos(a) * gun.range, gun.y + Math.sin(a) * gun.range, 12));
+  const zoneRefreshMs = state.draggingGroupIndices.length > 0 || state.moveGunUpHeld || state.moveGunDownHeld ? 45 : 110;
+  if (now - threeView.lastZoneOverlayUpdate >= zoneRefreshMs) {
+    clearThreeGroup(threeView.zoneGroup);
+    for (const gun of getInstalledGuns()) {
+      const points = [];
+      if (gun.attackMode === "sniper") {
+        const xEnd = world.width;
+        points.push(worldToThree(gun.x, gun.y - 8, 12));
+        points.push(worldToThree(xEnd, gun.y - gun.verticalBand / 2, 12));
+        points.push(worldToThree(xEnd, gun.y + gun.verticalBand / 2, 12));
+        points.push(worldToThree(gun.x, gun.y + 8, 12));
+        threeView.zoneGroup.add(makeThreeLine(points, 0x77d7ff, 0.36, true));
+      } else if (gun.attackMode === "shotgun") {
+        const halfAngle = ((gun.shotgunSpread || 120) * Math.PI) / 360;
+        const x2 = gun.x + gun.range;
+        const yTop = gun.y - Math.tan(halfAngle) * gun.range;
+        const yBottom = gun.y + Math.tan(halfAngle) * gun.range;
+        points.push(worldToThree(gun.x, gun.y, 12));
+        points.push(worldToThree(x2, yTop, 12));
+        points.push(worldToThree(x2, yBottom, 12));
+        threeView.zoneGroup.add(makeThreeLine(points, 0x7ecbff, 0.3, true));
+      } else {
+        const steps = 44;
+        for (let i = 0; i < steps; i += 1) {
+          const a = (Math.PI * 2 * i) / steps;
+          points.push(worldToThree(gun.x + Math.cos(a) * gun.range, gun.y + Math.sin(a) * gun.range, 12));
+        }
+        threeView.zoneGroup.add(makeThreeLine(points, 0x6fc2ff, 0.24, true));
       }
-      threeView.zoneGroup.add(makeThreeLine(points, 0x6fc2ff, 0.24, true));
     }
+    threeView.lastZoneOverlayUpdate = now;
   }
 
   const seen = new Set();
@@ -3004,44 +3198,47 @@ function syncThreeWorld(now) {
     mesh.material.emissive.setHex(emissive);
   }
 
-  clearThreeGroup(threeView.enemyInfoGroup);
-  for (const enemy of world.enemies) {
-    if (!enemy.alive()) continue;
-    const y = enemy.y - enemy.radius - 14;
-    const half = enemy.isBoss ? 27 : 14;
-    const hpPct = Math.max(0, Math.min(1, enemy.hp / enemy.maxHp));
-    const bgL = makeThreeLine(
-      [worldToThree(enemy.x - half, y, 20), worldToThree(enemy.x + half, y, 20)],
-      0x23364a,
-      0.92,
-      false
-    );
-    const fgColor = enemy.freezeStacks > 0 ? 0x8fdfff : enemy.burnStacks > 0 ? 0xffcf86 : 0x7ef5c5;
-    const fgL = makeThreeLine(
-      [worldToThree(enemy.x - half, y, 21), worldToThree(enemy.x - half + half * 2 * hpPct, y, 21)],
-      fgColor,
-      0.98,
-      false
-    );
-    threeView.enemyInfoGroup.add(bgL);
-    threeView.enemyInfoGroup.add(fgL);
+  if (now - threeView.lastEnemyInfoUpdate >= 95) {
+    clearThreeGroup(threeView.enemyInfoGroup);
+    for (const enemy of world.enemies) {
+      if (!enemy.alive()) continue;
+      const y = enemy.y - enemy.radius - 14;
+      const half = enemy.isBoss ? 27 : 14;
+      const hpPct = Math.max(0, Math.min(1, enemy.hp / enemy.maxHp));
+      const bgL = makeThreeLine(
+        [worldToThree(enemy.x - half, y, 20), worldToThree(enemy.x + half, y, 20)],
+        0x23364a,
+        0.92,
+        false
+      );
+      const fgColor = enemy.freezeStacks > 0 ? 0x8fdfff : enemy.burnStacks > 0 ? 0xffcf86 : 0x7ef5c5;
+      const fgL = makeThreeLine(
+        [worldToThree(enemy.x - half, y, 21), worldToThree(enemy.x - half + half * 2 * hpPct, y, 21)],
+        fgColor,
+        0.98,
+        false
+      );
+      threeView.enemyInfoGroup.add(bgL);
+      threeView.enemyInfoGroup.add(fgL);
 
-    if (enemy.burnStacks > 0 || enemy.freezeStacks > 0) {
-      const statusPoints = [];
-      const ringR = enemy.radius + 5;
-      const ringSteps = 20;
-      for (let i = 0; i < ringSteps; i += 1) {
-        const a = (Math.PI * 2 * i) / ringSteps;
-        statusPoints.push(worldToThree(enemy.x + Math.cos(a) * ringR, enemy.y + Math.sin(a) * ringR, 16));
-      }
-      if (enemy.burnStacks > 0) {
-        threeView.enemyInfoGroup.add(makeThreeLine(statusPoints, 0xffa45e, 0.85, true));
-      }
-      if (enemy.freezeStacks > 0) {
-        const inner = statusPoints.map((p) => p.clone().multiplyScalar(0.998));
-        threeView.enemyInfoGroup.add(makeThreeLine(inner, 0x87d9ff, 0.9, true));
+      if (enemy.burnStacks > 0 || enemy.freezeStacks > 0) {
+        const statusPoints = [];
+        const ringR = enemy.radius + 5;
+        const ringSteps = 20;
+        for (let i = 0; i < ringSteps; i += 1) {
+          const a = (Math.PI * 2 * i) / ringSteps;
+          statusPoints.push(worldToThree(enemy.x + Math.cos(a) * ringR, enemy.y + Math.sin(a) * ringR, 16));
+        }
+        if (enemy.burnStacks > 0) {
+          threeView.enemyInfoGroup.add(makeThreeLine(statusPoints, 0xffa45e, 0.85, true));
+        }
+        if (enemy.freezeStacks > 0) {
+          const inner = statusPoints.map((p) => p.clone().multiplyScalar(0.998));
+          threeView.enemyInfoGroup.add(makeThreeLine(inner, 0x87d9ff, 0.9, true));
+        }
       }
     }
+    threeView.lastEnemyInfoUpdate = now;
   }
 
   for (const [uid, mesh] of threeView.enemyMeshes.entries()) {
@@ -3051,6 +3248,8 @@ function syncThreeWorld(now) {
     if (mesh.material) mesh.material.dispose();
     threeView.enemyMeshes.delete(uid);
   }
+
+  if (state.manualMode) updateManualCamera();
 
   const bgPulse = 0.08 + Math.sin(now * 0.0015) * 0.02;
   threeView.scene.fog = new THREE.Fog(0x071322, 700, 1300 + bgPulse * 1000);
@@ -3106,6 +3305,9 @@ function renderThreeMode(now) {
 }
 
 function setThreeMode(enabled) {
+  if (!enabled && state.manualMode) {
+    exitManualMode(false);
+  }
   state.threeMode = Boolean(enabled);
   if (ui.board) ui.board.classList.toggle("three-active", state.threeMode);
   if (state.threeMode) initThreeView();
@@ -3122,6 +3324,14 @@ function onThreePointerDown(event) {
   if (!state.threeMode || !threeView.ready) return;
   if (event.button !== 0) return;
   event.preventDefault();
+  if (state.manualMode) {
+    state.manualDragActive = true;
+    threeView.orbit.pointerId = event.pointerId;
+    threeView.orbit.lastX = event.clientX;
+    threeView.orbit.lastY = event.clientY;
+    ui.threeLayer.setPointerCapture?.(event.pointerId);
+    return;
+  }
   const hitIdx = pickGunIndexAtThreeEvent(event);
   const point = getThreePointerWorldPoint(event);
   const pointerAngle = point ? pointToWallAngle(point.worldX, point.worldY) : 0;
@@ -3160,6 +3370,20 @@ function onThreePointerMove(event) {
   const o = threeView.orbit;
   if (!state.threeMode) return;
   if (o.pointerId !== null && event.pointerId !== o.pointerId) return;
+  if (state.manualMode && state.manualDragActive) {
+    event.preventDefault();
+    const dx = event.clientX - o.lastX;
+    o.lastX = event.clientX;
+    o.lastY = event.clientY;
+    const gun = world.guns[state.manualGunIndex];
+    if (gun?.installed) {
+      state.manualAimAngle += dx * 0.0032;
+      state.manualAimDistance += dx * 0.9;
+      clampManualAimForGun(gun);
+      state.hudDirty = true;
+    }
+    return;
+  }
   if (state.draggingGroupIndices.length > 0) {
     event.preventDefault();
     const point = getThreePointerWorldPoint(event);
@@ -3180,6 +3404,7 @@ function onThreePointerMove(event) {
 function onThreePointerUp(event) {
   const o = threeView.orbit;
   if (o.pointerId !== null && event.pointerId !== o.pointerId) return;
+  state.manualDragActive = false;
   o.dragging = false;
   o.pointerId = null;
   endGroupDrag();
@@ -3188,6 +3413,7 @@ function onThreePointerUp(event) {
 
 function onThreeWheel(event) {
   if (!state.threeMode || !threeView.ready) return;
+  if (state.manualMode) return;
   event.preventDefault();
   const o = threeView.orbit;
   const next = o.radius * (1 + event.deltaY * 0.0012);
@@ -3240,7 +3466,6 @@ function getThreePointerWorldPoint(event) {
 
 function render(now) {
   drawBackground();
-  drawZones();
   drawEngineAndLens(now);
   drawWall();
   drawBeamsAndParticles();
@@ -3256,6 +3481,7 @@ function setupCanvasForDpr() {
   canvas.width = Math.round(LOGICAL_WIDTH * currentDpr);
   canvas.height = Math.round(LOGICAL_HEIGHT * currentDpr);
   ctx.setTransform(currentDpr, 0, 0, currentDpr, 0, 0);
+  buildBackgroundCache();
   resizeThreeView();
 }
 
@@ -3267,6 +3493,7 @@ function update(dt) {
   clearDeadEnemies();
   updateWave(dt);
   updateVisualEffects(dt);
+  state.hudDirty = true;
 }
 
 function frame(now) {
@@ -3275,7 +3502,7 @@ function frame(now) {
   update(dt);
   render(now);
   renderThreeMode(now);
-  updateHud();
+  updateHud(false);
   requestAnimationFrame(frame);
 }
 
@@ -3468,11 +3695,143 @@ function onModalGunStripPointerDown(event) {
   }
 }
 
+function onSelectedGunInfoPointerDown(event) {
+  const btn = event.target.closest("[data-manual-toggle]");
+  if (!btn || !ui.selectedGunInfo?.contains(btn)) return;
+  event.preventDefault();
+  audioFx.uiTap();
+  toggleManualMode();
+  updateHud();
+}
+
+function onDocumentPointerDown(event) {
+  const target = event.target;
+  if (!(target instanceof Element)) return;
+
+  const profileBtn = target.closest(".js-profile-select");
+  if (profileBtn && ui.gunStrip?.contains(profileBtn)) {
+    onGunStripPointerDown(event);
+    return;
+  }
+
+  const slotBtn = target.closest(".js-slot");
+  if (slotBtn && ui.gunStrip?.contains(slotBtn)) {
+    onGunStripPointerDown(event);
+    return;
+  }
+
+  const pickCard = target.closest(".gun-pill.pickable");
+  if (pickCard && ui.modalGunStrip?.contains(pickCard)) {
+    onModalGunStripPointerDown(event);
+    return;
+  }
+
+  const manualBtn = target.closest("[data-manual-toggle]");
+  if (manualBtn && ui.selectedGunInfo?.contains(manualBtn)) {
+    onSelectedGunInfoPointerDown(event);
+    return;
+  }
+
+  if (target.closest("#startGameBtn")) {
+    audioFx.unlock();
+    startGame();
+    return;
+  }
+
+  if (target.closest("#helpBtn")) {
+    openHelpModal();
+    return;
+  }
+
+  if (target.closest("#helpCloseBtn")) {
+    closeHelpModal();
+    return;
+  }
+
+  if (target.closest("#cardsInfoBtn")) {
+    openCardsInfoModal();
+    return;
+  }
+
+  if (target.closest("#cardsInfoCloseBtn")) {
+    closeCardsInfoModal();
+    return;
+  }
+
+  if (target.closest("#pauseBtn")) {
+    audioFx.uiTap();
+    if (state.gameOver) return;
+    state.userPaused = !state.userPaused;
+    updateHud();
+    return;
+  }
+
+  if (target.closest("#soundBtn")) {
+    state.soundEnabled = !state.soundEnabled;
+    audioFx.enabled = state.soundEnabled;
+    saveSoundPreference(state.soundEnabled);
+    if (state.soundEnabled) {
+      audioFx.unlock();
+      audioFx.uiTap();
+    }
+    updateHud();
+    return;
+  }
+
+  if (target.closest("#musicBtn")) {
+    state.musicEnabled = !state.musicEnabled;
+    audioFx.musicEnabled = state.musicEnabled;
+    saveMusicPreference(state.musicEnabled);
+    if (state.musicEnabled) {
+      audioFx.unlock();
+      if (state.started) audioFx.startMusic();
+      if (state.soundEnabled) audioFx.uiTap();
+    } else {
+      audioFx.stopMusic();
+    }
+    updateHud();
+    return;
+  }
+
+  if (target.closest("#threeModeBtn")) {
+    audioFx.uiTap();
+    if (!window.THREE) {
+      logLine("3D режим недоступен: three.js не загружен.");
+      return;
+    }
+    setThreeMode(!state.threeMode);
+    return;
+  }
+}
+
+function onDocumentClick(event) {
+  const target = event.target;
+  if (!(target instanceof Element)) return;
+  if (target === ui.helpModal) {
+    closeHelpModal();
+    return;
+  }
+  if (target === ui.cardsInfoModal) {
+    closeCardsInfoModal();
+  }
+}
+
 function updateKeyboardGunMove(dt) {
   if (state.draggingGroupIndices.length > 0) return;
   const idx = state.selectedGunIndex;
   const gun = idx >= 0 ? world.guns[idx] : null;
   if (!gun?.installed) return;
+
+  if (state.manualMode && idx === state.manualGunIndex) {
+    const lateral = (state.moveGunRightHeld ? 1 : 0) - (state.moveGunLeftHeld ? 1 : 0);
+    if (lateral !== 0) {
+      const angularSpeed = 1.55;
+      setGunOnWallByAngle(gun, (gun.wallAngle ?? pointToWallAngle(gun.x, gun.y)) + lateral * angularSpeed * dt);
+      clampManualAimForGun(gun);
+      state.hudDirty = true;
+    }
+    return;
+  }
 
   const direction = (state.moveGunDownHeld ? 1 : 0) - (state.moveGunUpHeld ? 1 : 0);
   if (direction === 0) return;
@@ -3488,7 +3847,16 @@ function onWindowKeyDown(event) {
   const target = event.target;
   if (target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable)) return;
 
+  if (event.code === "Escape" && state.manualMode) {
+    event.preventDefault();
+    audioFx.uiTap();
+    exitManualMode(true);
+    updateHud();
+    return;
+  }
+
   if (event.code === "Tab") {
+    if (state.manualMode) return;
     event.preventDefault();
     audioFx.uiTap();
     cycleSelectedGun(event.shiftKey ? -1 : 1);
@@ -3497,14 +3865,30 @@ function onWindowKeyDown(event) {
   }
 
   if (event.code === "KeyW") {
+    if (state.manualMode) return;
     event.preventDefault();
     state.moveGunUpHeld = true;
     return;
   }
 
   if (event.code === "KeyS") {
+    if (state.manualMode) return;
     event.preventDefault();
     state.moveGunDownHeld = true;
+    return;
+  }
+
+  if (event.code === "KeyA") {
+    if (!state.manualMode) return;
+    event.preventDefault();
+    state.moveGunLeftHeld = true;
+    return;
+  }
+
+  if (event.code === "KeyD") {
+    if (!state.manualMode) return;
+    event.preventDefault();
+    state.moveGunRightHeld = true;
     return;
   }
 
@@ -3533,6 +3917,14 @@ function onWindowKeyUp(event) {
   }
   if (event.code === "KeyS") {
     state.moveGunDownHeld = false;
+    return;
+  }
+  if (event.code === "KeyA") {
+    state.moveGunLeftHeld = false;
+    return;
+  }
+  if (event.code === "KeyD") {
+    state.moveGunRightHeld = false;
   }
 }
 
@@ -3554,8 +3946,10 @@ function init() {
   initializeGunSlots();
   state.soundEnabled = loadSoundPreference();
   state.musicEnabled = loadMusicPreference();
+  state.volume = loadVolumePreference();
   audioFx.enabled = state.soundEnabled;
   audioFx.musicEnabled = state.musicEnabled;
+  audioFx.setMasterVolume(state.volume);
   setupCanvasForDpr();
   window.addEventListener("resize", setupCanvasForDpr);
   window.addEventListener("keydown", onWindowKeyDown);
@@ -3570,76 +3964,21 @@ function init() {
   canvas.addEventListener("touchmove", onCanvasTouchMove, { passive: false });
   canvas.addEventListener("touchend", onCanvasTouchEnd, { passive: false });
   canvas.addEventListener("touchcancel", onCanvasTouchEnd, { passive: false });
-  if (ui.gunStrip) ui.gunStrip.addEventListener("pointerdown", onGunStripPointerDown);
-  if (ui.modalGunStrip) ui.modalGunStrip.addEventListener("pointerdown", onModalGunStripPointerDown);
-  if (ui.startGameBtn) {
-    ui.startGameBtn.addEventListener("click", () => {
-      audioFx.unlock();
-      startGame();
+  document.addEventListener("pointerdown", onDocumentPointerDown);
+  document.addEventListener("click", onDocumentClick);
+  if (ui.volumeSlider) {
+    ui.volumeSlider.addEventListener("input", (event) => {
+      const value = Number(event.target.value) / 100;
+      state.volume = Math.max(0, Math.min(1, value));
+      audioFx.setMasterVolume(state.volume);
+      saveVolumePreference(state.volume);
+      state.hudDirty = true;
+      if (ui.volumeValue) ui.volumeValue.textContent = `${Math.round(state.volume * 100)}%`;
     });
   }
   ui.restartBtn.addEventListener("click", () => {
     window.location.reload();
   });
-  if (ui.helpBtn) ui.helpBtn.addEventListener("click", openHelpModal);
-  if (ui.helpCloseBtn) ui.helpCloseBtn.addEventListener("click", closeHelpModal);
-  if (ui.helpModal) {
-    ui.helpModal.addEventListener("click", (event) => {
-      if (event.target === ui.helpModal) closeHelpModal();
-    });
-  }
-  if (ui.cardsInfoBtn) ui.cardsInfoBtn.addEventListener("click", openCardsInfoModal);
-  if (ui.cardsInfoCloseBtn) ui.cardsInfoCloseBtn.addEventListener("click", closeCardsInfoModal);
-  if (ui.cardsInfoModal) {
-    ui.cardsInfoModal.addEventListener("click", (event) => {
-      if (event.target === ui.cardsInfoModal) closeCardsInfoModal();
-    });
-  }
-  if (ui.pauseBtn) {
-    ui.pauseBtn.addEventListener("click", () => {
-      audioFx.uiTap();
-      if (state.gameOver) return;
-      state.userPaused = !state.userPaused;
-      updateHud();
-    });
-  }
-  if (ui.soundBtn) {
-    ui.soundBtn.addEventListener("click", () => {
-      state.soundEnabled = !state.soundEnabled;
-      audioFx.enabled = state.soundEnabled;
-      saveSoundPreference(state.soundEnabled);
-      if (state.soundEnabled) {
-        audioFx.unlock();
-        audioFx.uiTap();
-      }
-      updateHud();
-    });
-  }
-  if (ui.musicBtn) {
-    ui.musicBtn.addEventListener("click", () => {
-      state.musicEnabled = !state.musicEnabled;
-      audioFx.musicEnabled = state.musicEnabled;
-      saveMusicPreference(state.musicEnabled);
-      if (state.musicEnabled) {
-        audioFx.unlock();
-        if (state.started) audioFx.startMusic();
-        if (state.soundEnabled) audioFx.uiTap();
-      } else {
-        audioFx.stopMusic();
-      }
-      updateHud();
-    });
-  }
-  if (ui.threeModeBtn) {
-    ui.threeModeBtn.addEventListener("click", () => {
-      audioFx.uiTap();
-      if (!window.THREE) {
-        logLine("3D режим недоступен: three.js не загружен.");
-        return;
-      }
-      setThreeMode(!state.threeMode);
-    });
-  }
   if (ui.threeLayer) {
     ui.threeLayer.addEventListener("pointerdown", onThreePointerDown);
     ui.threeLayer.addEventListener("pointermove", onThreePointerMove);
